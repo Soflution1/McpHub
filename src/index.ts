@@ -1,43 +1,64 @@
-import { loadConfig, expandPath } from './config.js';
+import { autoDetectConfig, loadConfig, expandPath } from './config.js';
 import { ProxyServer } from './proxy-server.js';
 import { setLogLevel, log } from './logger.js';
 import { homedir } from 'os';
 import { resolve } from 'path';
+import { existsSync } from 'fs';
 
-// ─── Default config path ─────────────────────────────────────────────
-
+const VERSION = '1.1.0';
 const DEFAULT_CONFIG = resolve(homedir(), '.mcp-on-demand', 'config.json');
 
-// ─── Main ────────────────────────────────────────────────────────────
-
 async function main() {
-  // Parse --config flag
   const args = process.argv.slice(2);
-  let configPath = DEFAULT_CONFIG;
 
+  let manualConfigPath: string | null = null;
   const configIdx = args.indexOf('--config');
   if (configIdx >= 0 && args[configIdx + 1]) {
-    configPath = expandPath(args[configIdx + 1]);
+    manualConfigPath = expandPath(args[configIdx + 1]);
   }
 
-  // Parse --log-level flag
   const logIdx = args.indexOf('--log-level');
   if (logIdx >= 0 && args[logIdx + 1]) {
     setLogLevel(args[logIdx + 1] as any);
   }
 
   try {
-    const config = loadConfig(configPath);
-    setLogLevel(config.settings.logLevel);
+    let config;
 
-    log.info(`mcp-on-demand v1.0.0`);
-    log.info(`Config: ${configPath}`);
+    if (manualConfigPath && existsSync(manualConfigPath)) {
+      config = loadConfig(manualConfigPath);
+      log.info(`Using manual config: ${manualConfigPath}`);
+    } else if (existsSync(DEFAULT_CONFIG)) {
+      config = loadConfig(DEFAULT_CONFIG);
+      log.info(`Using existing config: ${DEFAULT_CONFIG}`);
+    } else {
+      log.info('First run detected. Auto-reading Cursor MCP config...');
+      config = autoDetectConfig();
+
+      const serverCount = Object.keys(config.servers).length;
+      const skippedCount = Object.keys(config.skipped || {}).length;
+
+      log.info(`Found ${serverCount} stdio servers to proxy`);
+
+      if (config.skipped && skippedCount > 0) {
+        for (const [name, reason] of Object.entries(config.skipped)) {
+          log.info(`  Skipped: ${name} (${reason})`);
+        }
+      }
+
+      if (serverCount === 0) {
+        log.error('No servers found to proxy. Check your Cursor mcp.json.');
+        process.exit(1);
+      }
+    }
+
+    setLogLevel(config.settings.logLevel);
+    log.info(`mcp-on-demand v${VERSION}`);
     log.info(`Servers: ${Object.keys(config.servers).length}`);
     log.info(`Idle timeout: ${config.settings.idleTimeout}s`);
 
     const proxy = new ProxyServer(config);
 
-    // Graceful shutdown
     const shutdown = async () => {
       await proxy.shutdown();
       process.exit(0);

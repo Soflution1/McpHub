@@ -4,8 +4,6 @@ import { ServerConfig } from './config.js';
 import { ToolSchema, SchemaCache } from './schema-cache.js';
 import { log } from './logger.js';
 
-// ─── Types ───────────────────────────────────────────────────────────
-
 interface ManagedServer {
   name: string;
   config: ServerConfig;
@@ -16,8 +14,6 @@ interface ManagedServer {
   idleTimer: ReturnType<typeof setTimeout> | null;
   startPromise: Promise<Client> | null;
 }
-
-// ─── Child Manager ───────────────────────────────────────────────────
 
 export class ChildManager {
   private servers: Map<string, ManagedServer> = new Map();
@@ -51,33 +47,23 @@ export class ChildManager {
     log.info(`Child manager initialized with ${this.servers.size} servers (all sleeping)`);
   }
 
-  /**
-   * Get a running client for the given server.
-   * Starts the server if it's not running (lazy loading).
-   */
   async getClient(serverName: string): Promise<Client> {
     const server = this.servers.get(serverName);
     if (!server) throw new Error(`Unknown server: ${serverName}`);
 
-    // Already running - reset idle timer and return
     if (server.status === 'running' && server.client) {
       this.resetIdleTimer(server);
       return server.client;
     }
 
-    // Already starting - wait for it
     if (server.status === 'starting' && server.startPromise) {
       return server.startPromise;
     }
 
-    // Need to start
     server.startPromise = this.startServer(server);
     return server.startPromise;
   }
 
-  /**
-   * Start a child server and connect to it via MCP.
-   */
   private async startServer(server: ManagedServer): Promise<Client> {
     server.status = 'starting';
     const startTime = Date.now();
@@ -98,7 +84,6 @@ export class ChildManager {
         { capabilities: {} }
       );
 
-      // Race between connection and timeout
       await Promise.race([
         client.connect(transport),
         new Promise<never>((_, reject) =>
@@ -115,10 +100,8 @@ export class ChildManager {
       const elapsed = Date.now() - startTime;
       log.server(server.name, `Ready in ${elapsed}ms`);
 
-      // Set idle timer
       this.resetIdleTimer(server);
 
-      // Handle unexpected disconnection
       transport.onclose = () => {
         if (server.status === 'running') {
           log.server(server.name, 'Disconnected unexpectedly');
@@ -135,9 +118,6 @@ export class ChildManager {
     }
   }
 
-  /**
-   * Stop a server (idle timeout or manual).
-   */
   async stopServer(serverName: string): Promise<void> {
     const server = this.servers.get(serverName);
     if (!server || server.status === 'stopped') return;
@@ -148,19 +128,13 @@ export class ChildManager {
       if (server.client) {
         await server.client.close();
       }
-    } catch {
-      // Ignore close errors
-    }
+    } catch {}
 
     this.cleanupServer(server);
   }
 
-  /**
-   * Discover tools from a server (starts it temporarily if needed).
-   */
   async discoverTools(serverName: string): Promise<ToolSchema[]> {
     const client = await this.getClient(serverName);
-
     const result = await client.listTools();
 
     const tools: ToolSchema[] = (result.tools ?? []).map((t: any) => ({
@@ -173,9 +147,6 @@ export class ChildManager {
     return tools;
   }
 
-  /**
-   * Call a tool on a specific server.
-   */
   async callTool(serverName: string, toolName: string, args: Record<string, unknown>): Promise<any> {
     const client = await this.getClient(serverName);
     const server = this.servers.get(serverName)!;
@@ -183,14 +154,10 @@ export class ChildManager {
     this.resetIdleTimer(server);
 
     log.debug(`Calling ${serverName}/${toolName}`);
-
     const result = await client.callTool({ name: toolName, arguments: args });
     return result;
   }
 
-  /**
-   * Get status of all servers.
-   */
   getStatus(): Array<{ name: string; status: string; uptime: number }> {
     return Array.from(this.servers.values()).map(s => ({
       name: s.name,
@@ -199,16 +166,10 @@ export class ChildManager {
     }));
   }
 
-  /**
-   * Get count of running servers.
-   */
   get runningCount(): number {
     return Array.from(this.servers.values()).filter(s => s.status === 'running').length;
   }
 
-  /**
-   * Shutdown all servers gracefully.
-   */
   async shutdownAll(): Promise<void> {
     log.info('Shutting down all child servers...');
     const promises = Array.from(this.servers.keys()).map(name => this.stopServer(name));
@@ -216,15 +177,10 @@ export class ChildManager {
     log.info('All child servers stopped.');
   }
 
-  // ─── Private ─────────────────────────────────────────────────────
-
   private resetIdleTimer(server: ManagedServer): void {
     if (server.config.persistent) return;
-
     if (server.idleTimer) clearTimeout(server.idleTimer);
-
     const timeout = (server.config.idleTimeout ?? this.defaultIdleTimeout) * 1000;
-
     server.idleTimer = setTimeout(() => {
       this.stopServer(server.name);
     }, timeout);

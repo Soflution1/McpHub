@@ -1,7 +1,7 @@
 {
-  "name": "mcp-on-demand",
-  "version": "1.0.0",
-  "description": "Lazy-loading MCP proxy for Cursor IDE — start MCP servers on-demand, save GBs of RAM",
+  "name": "@soflution/mcp-on-demand",
+  "version": "1.1.0",
+  "description": "Lazy-loading MCP proxy for Cursor IDE — start MCP servers on-demand, save GBs of RAM. Zero config: just add to Cursor and restart.",
   "author": "SOFLUTION LTD",
   "license": "MIT",
   "type": "module",
@@ -17,8 +17,6 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "generate": "node dist/cli.js generate",
-    "migrate": "node dist/cli.js migrate",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -31,7 +29,9 @@
     "memory-optimization",
     "ide",
     "ai",
-    "llm"
+    "llm",
+    "ram",
+    "optimization"
   ],
   "repository": {
     "type": "git",
