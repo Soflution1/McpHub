@@ -79,7 +79,7 @@ function isSelf(name: string, cfg: any): boolean {
 
 /**
  * Auto-detect servers from Cursor mcp.json.
- * Filters out: this proxy, URL-based servers, disabled servers.
+ * Filters out: this proxy and URL-based servers. Disabled servers ARE included (thats the point).
  */
 export function autoDetectConfig(): ProxyConfig {
   const cursorPath = findCursorConfig();
@@ -100,10 +100,6 @@ export function autoDetectConfig(): ProxyConfig {
   for (const [name, cfg] of Object.entries(allServers) as [string, any][]) {
     if (isSelf(name, cfg)) {
       skipped[name] = 'self (this proxy)';
-      continue;
-    }
-    if (cfg.disabled === true) {
-      skipped[name] = 'disabled';
       continue;
     }
     if (cfg.url && !cfg.command) {
