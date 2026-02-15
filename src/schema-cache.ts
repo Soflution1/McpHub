@@ -91,6 +91,15 @@ export class SchemaCache {
   get toolCount(): number { return this.toolRouting.size; }
   get serverNames(): string[] { return this.cache ? Object.keys(this.cache.servers) : []; }
 
+  getServerToolSummary(): Array<{ server: string; toolCount: number; tools: string[] }> {
+    if (!this.cache) return [];
+    return Object.entries(this.cache.servers).map(([name, sc]) => ({
+      server: name,
+      toolCount: sc.tools.length,
+      tools: sc.tools.map(t => t.name),
+    }));
+  }
+
   private rebuildRouting(): void {
     this.toolRouting.clear();
     if (!this.cache) return;

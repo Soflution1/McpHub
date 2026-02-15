@@ -6,7 +6,7 @@ import { homedir } from 'os';
 import { resolve } from 'path';
 import { existsSync, rmSync } from 'fs';
 
-const VERSION = '1.3.1';
+const VERSION = '1.4.0';
 
 const command = process.argv[2];
 

@@ -27,7 +27,7 @@ export class ProxyServer {
       config.settings.startupTimeout,
     );
     this.server = new Server(
-      { name: 'mcp-on-demand', version: '1.3.1' },
+      { name: 'mcp-on-demand', version: '1.4.0' },
       { capabilities: { tools: {} } }
     );
     this.registerHandlers();
@@ -46,7 +46,7 @@ export class ProxyServer {
       this.searchEngine = new ToolSearchEngine(this.schemaCache);
       this.searchEngine.buildIndex();
       log.info(
-        `[TOOL-SEARCH MODE] Exposing 2 meta-tools instead of ${this.schemaCache.toolCount} individual tools`
+        `[TOOL-SEARCH MODE] Exposing 3 meta-tools instead of ${this.schemaCache.toolCount} individual tools`
       );
     } else {
       log.info(
@@ -100,13 +100,13 @@ export class ProxyServer {
         return { tools: this.getMetaTools() };
       }
       const tools = this.schemaCache.getAllTools(this.config.settings.prefixTools);
-      return {
-        tools: tools.map(t => ({
+      const mappedTools = tools.map(t => ({
           name: t.name,
           description: t.description ?? '',
           inputSchema: t.inputSchema,
-        })),
-      };
+        }));
+      mappedTools.unshift(this.getListServersTool());
+      return { tools: mappedTools };
     });
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
@@ -114,11 +114,13 @@ export class ProxyServer {
       const toolArgs = (args ?? {}) as Record<string, unknown>;
 
       if (this.config.settings.mode === 'tool-search' && this.searchEngine) {
+        if (toolName === 'list_servers') return this.handleListServers(toolArgs.server as string | undefined);
         if (toolName === 'search_tools') return this.handleSearchTools(toolArgs);
         if (toolName === 'use_tool') return this.handleUseTool(toolArgs);
         return { content: [{ type: 'text', text: `Unknown meta-tool: ${toolName}` }], isError: true };
       }
 
+      if (toolName === 'list_servers') return this.handleListServers(toolArgs.server as string | undefined);
       return this.callDirectTool(toolName, toolArgs);
     });
   }
@@ -142,6 +144,7 @@ export class ProxyServer {
           required: ['query'],
         },
       },
+      this.getListServersTool(),
       {
         name: 'use_tool',
         description: 'Call a tool discovered via search_tools. Pass the exact tool name and its arguments.',
@@ -194,6 +197,59 @@ export class ProxyServer {
       log.error(`Tool call failed (${serverName}/${originalToolName}): ${errorMsg}`);
       return { content: [{ type: 'text', text: `Error: ${errorMsg}` }], isError: true };
     }
+  }
+
+  private getListServersTool() {
+    const summary = this.schemaCache.getServerToolSummary();
+    const serverList = summary.map(s => `- ${s.server} (${s.toolCount} tools)`).join('\n');
+    return {
+      name: 'list_servers',
+      description:
+        `List all MCP servers managed by mcp-on-demand proxy and their tools.
+
+` +
+        `Currently managing ${summary.length} servers with ${this.schemaCache.toolCount} total tools:
+${serverList}`,
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          server: { type: 'string', description: 'Optional: filter by server name to see its tools' },
+        },
+      },
+    };
+  }
+
+  private handleListServers(filter?: string) {
+    const summary = this.schemaCache.getServerToolSummary();
+    const status = this.childManager.getStatus();
+
+    let filtered = summary;
+    if (filter) {
+      const q = filter.toLowerCase();
+      filtered = summary.filter(s => s.server.toLowerCase().includes(q));
+    }
+
+    const result = filtered.map(s => {
+      const serverStatus = status.find((st: any) => st.name === s.server);
+      return {
+        server: s.server,
+        status: serverStatus?.status ?? 'idle',
+        toolCount: s.toolCount,
+        tools: s.tools,
+      };
+    });
+
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          totalServers: summary.length,
+          totalTools: this.schemaCache.toolCount,
+          showing: filtered.length,
+          servers: result,
+        }, null, 2),
+      }],
+    };
   }
 
   private async preloadServers(): Promise<void> {
