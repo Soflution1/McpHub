@@ -1,6 +1,6 @@
 {
   "name": "@soflution/mcp-on-demand",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Lazy-loading MCP proxy for Cursor IDE — start MCP servers on-demand, save GBs of RAM. Zero config: just add to Cursor and restart.",
   "author": "SOFLUTION LTD",
   "license": "MIT",

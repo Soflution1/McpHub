@@ -27,7 +27,7 @@ export class ProxyServer {
       config.settings.startupTimeout,
     );
     this.server = new Server(
-      { name: 'mcp-on-demand', version: '1.4.0' },
+      { name: 'mcp-on-demand', version: '1.5.0' },
       { capabilities: { tools: {} } }
     );
     this.registerHandlers();
