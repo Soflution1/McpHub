@@ -13,6 +13,24 @@ interface ManagedServer {
   lastActivity: number;
   idleTimer: ReturnType<typeof setTimeout> | null;
   startPromise: Promise<Client> | null;
+  failCount: number;
+  lastFailure: number;
+}
+
+const RETRYABLE_PATTERNS = [
+  'EPIPE', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT',
+  'ERR_MODULE_NOT_FOUND',
+  'socket hang up', 'write after end', 'stream destroyed',
+  'Disconnected', 'disconnected', 'connection closed',
+  'unauthorized', 'Unauthorized', '401', '403',
+  'token expired', 'Token expired', 'invalid_grant',
+  'SIGTERM', 'SIGKILL', 'spawn', 'killed',
+  'Startup timeout',
+];
+
+function isRetryable(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return RETRYABLE_PATTERNS.some(p => msg.includes(p));
 }
 
 export class ChildManager {
@@ -41,6 +59,8 @@ export class ChildManager {
         lastActivity: 0,
         idleTimer: null,
         startPromise: null,
+        failCount: 0,
+        lastFailure: 0,
       });
     }
 
@@ -50,6 +70,11 @@ export class ChildManager {
   async getClient(serverName: string): Promise<Client> {
     const server = this.servers.get(serverName);
     if (!server) throw new Error(`Unknown server: ${serverName}`);
+
+    if (server.status === 'error') {
+      log.server(serverName, 'Recovering from error state...');
+      this.cleanupServer(server);
+    }
 
     if (server.status === 'running' && server.client) {
       this.resetIdleTimer(server);
@@ -96,6 +121,7 @@ export class ChildManager {
       server.status = 'running';
       server.lastActivity = Date.now();
       server.startPromise = null;
+      server.failCount = 0;
 
       const elapsed = Date.now() - startTime;
       log.server(server.name, `Ready in ${elapsed}ms`);
@@ -106,6 +132,7 @@ export class ChildManager {
         if (server.status === 'running') {
           log.server(server.name, 'Disconnected unexpectedly');
           this.cleanupServer(server);
+          server.status = 'error';
         }
       };
 
@@ -113,6 +140,8 @@ export class ChildManager {
     } catch (err) {
       server.status = 'error';
       server.startPromise = null;
+      server.failCount++;
+      server.lastFailure = Date.now();
       log.error(`Failed to start ${server.name}:`, err);
       throw err;
     }
@@ -123,46 +152,87 @@ export class ChildManager {
     if (!server || server.status === 'stopped') return;
 
     log.server(serverName, 'Stopping (idle timeout)');
-
     try {
       if (server.client) {
         await server.client.close();
       }
     } catch {}
-
     this.cleanupServer(server);
   }
 
   async discoverTools(serverName: string): Promise<ToolSchema[]> {
     const client = await this.getClient(serverName);
     const result = await client.listTools();
-
     const tools: ToolSchema[] = (result.tools ?? []).map((t: any) => ({
       name: t.name,
       description: t.description,
       inputSchema: t.inputSchema ?? { type: 'object', properties: {} },
     }));
-
     log.server(serverName, `Discovered ${tools.length} tools`);
     return tools;
   }
 
   async callTool(serverName: string, toolName: string, args: Record<string, unknown>): Promise<any> {
-    const client = await this.getClient(serverName);
-    const server = this.servers.get(serverName)!;
-    server.lastActivity = Date.now();
-    this.resetIdleTimer(server);
+    const server = this.servers.get(serverName);
+    if (!server) throw new Error(`Unknown server: ${serverName}`);
 
-    log.debug(`Calling ${serverName}/${toolName}`);
-    const result = await client.callTool({ name: toolName, arguments: args });
-    return result;
+    // First attempt
+    try {
+      const client = await this.getClient(serverName);
+      server.lastActivity = Date.now();
+      this.resetIdleTimer(server);
+
+      log.debug(`Calling ${serverName}/${toolName}`);
+      const result = await client.callTool({ name: toolName, arguments: args });
+      return result;
+    } catch (firstError) {
+      const firstMsg = firstError instanceof Error ? firstError.message : String(firstError);
+
+      // If not retryable, fail immediately
+      if (!isRetryable(firstError)) {
+        log.error(`${serverName}/${toolName} failed (non-retryable): ${firstMsg}`);
+        throw firstError;
+      }
+
+      // Retryable error: restart server and try once more
+      log.warn(`${serverName}/${toolName} failed (retryable): ${firstMsg}`);
+      log.server(serverName, 'Restarting for retry...');
+
+      // Force cleanup and restart
+      try {
+        if (server.client) await server.client.close().catch(() => {});
+      } catch {}
+      this.cleanupServer(server);
+
+      // Brief pause before retry
+      await new Promise(r => setTimeout(r, 1000));
+
+      // Second attempt
+      try {
+        const client = await this.getClient(serverName);
+        server.lastActivity = Date.now();
+        this.resetIdleTimer(server);
+
+        log.server(serverName, `Retrying ${toolName}...`);
+        const result = await client.callTool({ name: toolName, arguments: args });
+        log.server(serverName, `Retry succeeded for ${toolName}`);
+        return result;
+      } catch (retryError) {
+        const retryMsg = retryError instanceof Error ? retryError.message : String(retryError);
+        log.error(`${serverName}/${toolName} retry also failed: ${retryMsg}`);
+        server.failCount++;
+        server.lastFailure = Date.now();
+        throw retryError;
+      }
+    }
   }
 
-  getStatus(): Array<{ name: string; status: string; uptime: number }> {
+  getStatus(): Array<{ name: string; status: string; uptime: number; failCount: number }> {
     return Array.from(this.servers.values()).map(s => ({
       name: s.name,
       status: s.status,
       uptime: s.status === 'running' ? Math.floor((Date.now() - s.lastActivity) / 1000) : 0,
+      failCount: s.failCount,
     }));
   }
 
