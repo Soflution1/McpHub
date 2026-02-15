@@ -20,6 +20,7 @@ export interface ProxySettings {
   startupTimeout: number;
   prefixTools: boolean;
   mode: 'passthrough' | 'tool-search';
+  preload: 'none' | 'all' | string[];
 }
 
 export interface ProxyConfig {
@@ -37,6 +38,7 @@ const DEFAULT_SETTINGS: ProxySettings = {
   startupTimeout: 30000,
   prefixTools: false,
   mode: 'tool-search',
+  preload: 'all',
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────

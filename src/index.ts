@@ -5,7 +5,7 @@ import { homedir } from 'os';
 import { resolve } from 'path';
 import { existsSync } from 'fs';
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const DEFAULT_CONFIG = resolve(homedir(), '.mcp-on-demand', 'config.json');
 
 async function main() {
