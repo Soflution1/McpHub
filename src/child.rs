@@ -204,11 +204,94 @@ impl ChildManager {
             }
         }
     }
+
+    /// Health check: ping all running servers. Returns list of dead/unresponsive ones.
+    pub async fn health_check(&self) -> Vec<(String, String)> {
+        let mut dead_servers: Vec<(String, String)> = Vec::new();
+        let mut children = self.children.lock().await;
+
+        let names: Vec<String> = children.keys().cloned().collect();
+        for name in names {
+            let proc = match children.get_mut(&name) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            // Check if process is still alive
+            match proc.child.try_wait() {
+                Ok(Some(status)) => {
+                    dead_servers.push((name.clone(), format!("Process exited: {}", status)));
+                    children.remove(&name);
+                    continue;
+                }
+                Ok(None) => {} // Still running
+                Err(e) => {
+                    dead_servers.push((name.clone(), format!("Process check failed: {}", e)));
+                    children.remove(&name);
+                    continue;
+                }
+            }
+
+            // Try MCP ping with short timeout
+            let ping_timeout = std::time::Duration::from_secs(5);
+            let ping_result = tokio::time::timeout(
+                ping_timeout,
+                send_request_inner(proc, "ping", serde_json::json!({})),
+            ).await;
+
+            match ping_result {
+                Ok(Ok(_)) => {} // Healthy
+                Ok(Err(e)) => {
+                    dead_servers.push((name.clone(), format!("Ping error: {}", e)));
+                    if let Some(mut p) = children.remove(&name) {
+                        let _ = p.child.kill().await;
+                    }
+                }
+                Err(_) => {
+                    dead_servers.push((name.clone(), "Ping timeout (5s)".to_string()));
+                    if let Some(mut p) = children.remove(&name) {
+                        let _ = p.child.kill().await;
+                    }
+                }
+            }
+        }
+
+        dead_servers
+    }
+
+    /// Restart a server by name. Returns Ok with tool count or error.
+    pub async fn restart_server(&self, name: &str) -> Result<usize, String> {
+        // Kill if still present
+        {
+            let mut children = self.children.lock().await;
+            if let Some(mut proc) = children.remove(name) {
+                let _ = proc.child.kill().await;
+            }
+        }
+        // Small delay before restart
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let tools = self.start_server(name).await?;
+        Ok(tools.len())
+    }
 }
 
 // ─── MCP Protocol Communication ─────────────────────────────
 
+const REQUEST_TIMEOUT_SECS: u64 = 30;
+
 async fn send_request(
+    proc: &mut ChildProcess,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let timeout = std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS);
+    match tokio::time::timeout(timeout, send_request_inner(proc, method, params)).await {
+        Ok(result) => result,
+        Err(_) => Err(format!("Timeout: server did not respond within {}s", REQUEST_TIMEOUT_SECS)),
+    }
+}
+
+async fn send_request_inner(
     proc: &mut ChildProcess,
     method: &str,
     params: serde_json::Value,

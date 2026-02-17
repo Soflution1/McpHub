@@ -30,6 +30,9 @@ pub struct ProxyConfig {
     pub preload: Preload,
     pub idle_timeout_ms: u64,
     pub preload_delay_ms: u64,
+    pub health_check_interval_secs: u64,
+    pub health_auto_restart: bool,
+    pub health_notifications: bool,
 }
 
 impl Default for ProxyConfig {
@@ -40,6 +43,9 @@ impl Default for ProxyConfig {
             preload: Preload::All,
             idle_timeout_ms: 5 * 60 * 1000,
             preload_delay_ms: 200,
+            health_check_interval_secs: 30,
+            health_auto_restart: true,
+            health_notifications: true,
         }
     }
 }
@@ -102,6 +108,18 @@ fn load_dedicated_config() -> Option<ProxyConfig> {
         }
         if let Some(timeout) = settings.get("idleTimeout").and_then(|v| v.as_u64()) {
             config.idle_timeout_ms = timeout * 1000;
+        }
+        // Health monitor settings
+        if let Some(health) = settings.get("health") {
+            if let Some(interval) = health.get("checkInterval").and_then(|v| v.as_u64()) {
+                config.health_check_interval_secs = interval;
+            }
+            if let Some(restart) = health.get("autoRestart").and_then(|v| v.as_bool()) {
+                config.health_auto_restart = restart;
+            }
+            if let Some(notify) = health.get("notifications").and_then(|v| v.as_bool()) {
+                config.health_notifications = notify;
+            }
         }
     }
     Some(config)

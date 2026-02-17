@@ -2,6 +2,7 @@ mod cache;
 pub mod child;
 mod config;
 mod dashboard;
+mod health;
 mod protocol;
 mod proxy;
 mod search;
@@ -21,10 +22,22 @@ USAGE:
   mcp-on-demand              Start proxy (loads from cache, instant)
   mcp-on-demand generate     Start all servers, index tools, save cache
   mcp-on-demand dashboard    Open web dashboard on http://127.0.0.1:24680
-  mcp-on-demand status       Show detected servers and cache info
+  mcp-on-demand status       Show detected servers, cache, and health config
   mcp-on-demand search "q"   Test BM25 search
   mcp-on-demand version      Show version
   mcp-on-demand help         Show this help
+
+HEALTH MONITORING (v3.1):
+  Built-in health checks with native OS notifications (macOS/Windows/Linux).
+  If a server crashes, you get a desktop notification + auto-restart.
+  Configure in ~/.mcp-on-demand/config.json:
+    "settings": {{
+      "health": {{
+        "checkInterval": 30,   // seconds between checks
+        "autoRestart": true,   // auto-restart crashed servers
+        "notifications": true  // native OS notifications
+      }}
+    }}
 
 FIRST TIME SETUP:
   1. Configure servers in ~/.mcp-on-demand/config.json
@@ -41,6 +54,11 @@ fn cmd_status() {
     println!("mcp-on-demand v{}", VERSION);
     println!("Mode: {:?}", config.mode);
     println!("Servers configured: {}", config.servers.len());
+    println!("Health: check={}s, auto_restart={}, notifications={}",
+        config.health_check_interval_secs,
+        config.health_auto_restart,
+        config.health_notifications,
+    );
 
     // Cache info
     if let Some(cached) = cache::load_cache() {

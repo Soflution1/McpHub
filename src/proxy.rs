@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::child::ChildManager;
 use crate::config::{Mode, Preload, ProxyConfig};
+use crate::health::HealthMonitor;
 use crate::protocol::*;
 use crate::search::{IndexedTool, SearchEngine};
 
@@ -63,7 +64,19 @@ impl ProxyServer {
             }
         });
 
-        // 3. Main stdio loop (index already populated)
+        // 3. Start health monitor (notifications + auto-restart)
+        if self.config.health_notifications {
+            let monitor = HealthMonitor::new(
+                self.child_manager.clone(),
+                self.config.health_check_interval_secs,
+                self.config.health_auto_restart,
+            );
+            tokio::spawn(async move {
+                monitor.run().await;
+            });
+        }
+
+        // 4. Main stdio loop (index already populated)
         self.stdio_loop().await;
     }
 
@@ -140,7 +153,7 @@ impl ProxyServer {
             },
             server_info: ServerInfo {
                 name: "mcp-on-demand".into(),
-                version: "3.0.0".into(),
+                version: "3.1.0".into(),
             },
         };
 
