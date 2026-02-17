@@ -140,7 +140,7 @@ impl ProxyServer {
             },
             server_info: ServerInfo {
                 name: "mcp-on-demand".into(),
-                version: "2.0.0".into(),
+                version: "3.0.0".into(),
             },
         };
 
@@ -279,15 +279,17 @@ impl ProxyServer {
                 if !seen_servers.contains(&t.server_name) {
                     seen_servers.push(t.server_name.clone());
                 }
+                let desc: String = t.description.chars().take(200).collect();
+                let schema = strip_schema(&t.tool_def.input_schema);
                 serde_json::json!({
                     "server": t.server_name,
                     "tool": t.original_name,
-                    "description": t.description,
-                    "inputSchema": t.tool_def.input_schema,
+                    "description": desc,
+                    "inputSchema": schema,
                 })
             }).collect();
 
-            let text = serde_json::to_string_pretty(&serde_json::json!({
+            let text = serde_json::to_string(&serde_json::json!({
                 "query": query,
                 "total_indexed": engine.tool_count(),
                 "total_servers": all_server_names.len(),
@@ -332,7 +334,7 @@ impl ProxyServer {
 
         let matches: Vec<serde_json::Value> = matches.into_iter().take(top_k).collect();
 
-        let text = serde_json::to_string_pretty(&serde_json::json!({
+        let text = serde_json::to_string(&serde_json::json!({
             "query": query,
             "total_indexed": 0,
             "note": "Servers loading in background. Results based on server names. Use execute to call tools.",
@@ -398,6 +400,34 @@ impl ProxyServer {
             Ok(result) => JsonRpcResponse::success(id, result),
             Err(e) => JsonRpcResponse::error(id, -32000, e),
         }
+    }
+}
+
+/// Strip noise from inputSchema: remove title, examples, $schema, additionalProperties.
+/// Keeps type, properties, required, description (on root only), items, enum.
+fn strip_schema(schema: &serde_json::Value) -> serde_json::Value {
+    match schema {
+        serde_json::Value::Object(map) => {
+            let mut clean = serde_json::Map::new();
+            for (k, v) in map {
+                match k.as_str() {
+                    "title" | "examples" | "$schema" | "additionalProperties" | "$id" | "$comment" | "default" => continue,
+                    "properties" => {
+                        if let Some(props) = v.as_object() {
+                            let mut cleaned_props = serde_json::Map::new();
+                            for (pk, pv) in props {
+                                cleaned_props.insert(pk.clone(), strip_schema(pv));
+                            }
+                            clean.insert(k.clone(), serde_json::Value::Object(cleaned_props));
+                        }
+                    }
+                    "items" => { clean.insert(k.clone(), strip_schema(v)); }
+                    _ => { clean.insert(k.clone(), v.clone()); }
+                }
+            }
+            serde_json::Value::Object(clean)
+        }
+        other => other.clone(),
     }
 }
 
