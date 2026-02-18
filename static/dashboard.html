@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MCP on Demand</title>
+<title>McpHub</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 28 28'%3E%3Ccircle cx='14' cy='14' r='4.5' fill='%23fbbf24'/%3E%3Ccircle cx='5' cy='5' r='2' fill='%23fbbf24' opacity='.5'/%3E%3Ccircle cx='23' cy='5' r='2' fill='%23fbbf24' opacity='.5'/%3E%3Ccircle cx='5' cy='23' r='2' fill='%23fbbf24' opacity='.5'/%3E%3Ccircle cx='23' cy='23' r='2' fill='%23fbbf24' opacity='.5'/%3E%3Ccircle cx='14' cy='2.5' r='1.5' fill='%23fbbf24' opacity='.4'/%3E%3Ccircle cx='25.5' cy='14' r='1.5' fill='%23fbbf24' opacity='.4'/%3E%3Ccircle cx='2.5' cy='14' r='1.5' fill='%23fbbf24' opacity='.4'/%3E%3Cline x1='5' y1='5' x2='11' y2='11.5' stroke='%23fbbf24' stroke-width='.8' opacity='.3'/%3E%3Cline x1='23' y1='5' x2='17' y2='11.5' stroke='%23fbbf24' stroke-width='.8' opacity='.3'/%3E%3Cline x1='5' y1='23' x2='11' y2='16.5' stroke='%23fbbf24' stroke-width='.8' opacity='.3'/%3E%3Cline x1='23' y1='23' x2='17' y2='16.5' stroke='%23fbbf24' stroke-width='.8' opacity='.3'/%3E%3Cline x1='14' y1='2.5' x2='14' y2='9.5' stroke='%23fbbf24' stroke-width='.8' opacity='.3'/%3E%3Cline x1='25.5' y1='14' x2='18.5' y2='14' stroke='%23fbbf24' stroke-width='.8' opacity='.3'/%3E%3Cline x1='2.5' y1='14' x2='9.5' y2='14' stroke='%23fbbf24' stroke-width='.8' opacity='.3'/%3E%3C/svg%3E">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -115,7 +115,7 @@ header{display:flex;align-items:center;justify-content:space-between;padding:16p
 </head><body>
 <div class="container" id="main-content">
   <header>
-    <div class="logo"><svg width="28" height="28" viewBox="0 0 28 28" fill="none" style="vertical-align:middle;margin-right:8px"><circle cx="14" cy="14" r="4.5" fill="#fbbf24"/><circle cx="5" cy="5" r="2" fill="#fbbf24" opacity=".5"/><circle cx="23" cy="5" r="2" fill="#fbbf24" opacity=".5"/><circle cx="5" cy="23" r="2" fill="#fbbf24" opacity=".5"/><circle cx="23" cy="23" r="2" fill="#fbbf24" opacity=".5"/><circle cx="14" cy="2.5" r="1.5" fill="#fbbf24" opacity=".4"/><circle cx="25.5" cy="14" r="1.5" fill="#fbbf24" opacity=".4"/><circle cx="2.5" cy="14" r="1.5" fill="#fbbf24" opacity=".4"/><line x1="5" y1="5" x2="11" y2="11.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="23" y1="5" x2="17" y2="11.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="5" y1="23" x2="11" y2="16.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="23" y1="23" x2="17" y2="16.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="14" y1="2.5" x2="14" y2="9.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="25.5" y1="14" x2="18.5" y2="14" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="2.5" y1="14" x2="9.5" y2="14" stroke="#fbbf24" stroke-width=".8" opacity=".3"/></svg>MCP <span>on Demand</span></div>
+    <div class="logo"><svg width="28" height="28" viewBox="0 0 28 28" fill="none" style="vertical-align:middle;margin-right:8px"><circle cx="14" cy="14" r="4.5" fill="#fbbf24"/><circle cx="5" cy="5" r="2" fill="#fbbf24" opacity=".5"/><circle cx="23" cy="5" r="2" fill="#fbbf24" opacity=".5"/><circle cx="5" cy="23" r="2" fill="#fbbf24" opacity=".5"/><circle cx="23" cy="23" r="2" fill="#fbbf24" opacity=".5"/><circle cx="14" cy="2.5" r="1.5" fill="#fbbf24" opacity=".4"/><circle cx="25.5" cy="14" r="1.5" fill="#fbbf24" opacity=".4"/><circle cx="2.5" cy="14" r="1.5" fill="#fbbf24" opacity=".4"/><line x1="5" y1="5" x2="11" y2="11.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="23" y1="5" x2="17" y2="11.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="5" y1="23" x2="11" y2="16.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="23" y1="23" x2="17" y2="16.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="14" y1="2.5" x2="14" y2="9.5" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="25.5" y1="14" x2="18.5" y2="14" stroke="#fbbf24" stroke-width=".8" opacity=".3"/><line x1="2.5" y1="14" x2="9.5" y2="14" stroke="#fbbf24" stroke-width=".8" opacity=".3"/></svg>MCP <span>Hub</span></div>
     <div class="tabs">
       <div class="tab active" data-view="servers" onclick="switchView('servers')">Servers</div>
       <div class="tab" data-view="tools" onclick="switchView('tools')">Tools</div>
@@ -197,7 +197,7 @@ header{display:flex;align-items:center;justify-content:space-between;padding:16p
   <div class="overlay hidden" id="welcome-modal">
     <div class="modal" onclick="event.stopPropagation()" style="text-align:center">
       <div style="font-size:48px;margin-bottom:12px">🎉</div>
-      <h2 style="font-size:20px;font-weight:700;margin-bottom:8px">Welcome to MCP on Demand</h2>
+      <h2 style="font-size:20px;font-weight:700;margin-bottom:8px">Welcome to McpHub</h2>
       <p style="color:var(--text-dim);font-size:13px;line-height:1.6;margin-bottom:16px">
         All your MCP servers are now managed from this dashboard.<br>
         Add, remove, enable/disable servers. Rebuild cache in one click.
@@ -207,7 +207,7 @@ header{display:flex;align-items:center;justify-content:space-between;padding:16p
         <div style="font-size:16px;font-weight:700;color:var(--accent);font-family:monospace">http://127.0.0.1:24680</div>
       </div>
       <p style="color:var(--text-dim);font-size:11px;margin-bottom:18px">
-        Run <code style="background:var(--card);padding:2px 6px;border-radius:4px">mcp-on-demand dashboard</code> anytime to reopen.
+        Run <code style="background:var(--card);padding:2px 6px;border-radius:4px">McpHub dashboard</code> anytime to reopen.
       </p>
       <button class="btn btn-primary" onclick="dismissWelcome()" style="width:100%;padding:12px">Got it, let's go!</button>
     </div>
