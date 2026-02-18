@@ -137,11 +137,45 @@ Cursor config (`~/.cursor/mcp.json`) just needs:
 | `MCP_ON_DEMAND_PRELOAD` | `all` / `none` | `all` |
 | `MCP_ON_DEMAND_DEBUG` | `1` | - |
 
+## Always-on Dashboard (macOS)
+
+Run the web dashboard 24/7 as a background service, independent of Cursor:
+
+```bash
+# Create LaunchAgent
+cat > ~/Library/LaunchAgents/com.soflution.mcp-on-demand-dashboard.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.soflution.mcp-on-demand-dashboard</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/path/to/mcp-on-demand</string>
+        <string>dashboard</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+</dict>
+</plist>
+EOF
+
+# Activate
+launchctl load ~/Library/LaunchAgents/com.soflution.mcp-on-demand-dashboard.plist
+```
+
+Dashboard available at http://127.0.0.1:24680 — starts at login, auto-restarts on crash, uses 0% CPU / 3MB RAM.
+
 ## Uninstall
 
 ```bash
 rm ~/.local/bin/mcp-on-demand
 rm -rf ~/.mcp-on-demand
+launchctl unload ~/Library/LaunchAgents/com.soflution.mcp-on-demand-dashboard.plist 2>/dev/null
+rm -f ~/Library/LaunchAgents/com.soflution.mcp-on-demand-dashboard.plist
 # Restore Cursor config from backup:
 cp ~/.mcp-on-demand/cursor-backup.json ~/.cursor/mcp.json
 ```
