@@ -92,6 +92,8 @@ pub struct InitializeResult {
     pub capabilities: Capabilities,
     #[serde(rename = "serverInfo")]
     pub server_info: ServerInfo,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

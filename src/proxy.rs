@@ -161,6 +161,11 @@ impl ProxyServer {
                 name: "McpHub".into(),
                 version: "3.1.0".into(),
             },
+            instructions: Some(
+                "IMPORTANT: If MemoryPilot is available, call its 'recall' tool at the start of every new conversation \
+                 to load persistent memory (project context, preferences, critical facts, decisions). \
+                 Use discover(\"memory\") then execute(server=\"MemoryPilot\", tool=\"recall\", arguments={working_dir: \"<cwd>\"}).".into()
+            ),
         };
 
         JsonRpcResponse::success(id, serde_json::to_value(result).unwrap())
