@@ -61,7 +61,7 @@ impl ChildManager {
         None
     }
 
-    /// Start a server by name. Returns its tools list.
+    /// Start a server by name with retry logic. Returns its tools list.
     pub async fn start_server(&self, name: &str) -> Result<Vec<ToolDef>, String> {
         let name = self.resolve_name(name)
             .ok_or_else(|| format!("Unknown server: {}", name))?;
@@ -76,6 +76,33 @@ impl ChildManager {
             }
         }
 
+        const MAX_RETRIES: u32 = 3;
+        const BACKOFF_MS: [u64; 3] = [500, 1000, 2000];
+        let mut last_error = String::new();
+
+        for attempt in 0..MAX_RETRIES {
+            if attempt > 0 {
+                let delay = BACKOFF_MS.get(attempt as usize - 1).copied().unwrap_or(2000);
+                eprintln!("[McpHub][RETRY] {} attempt {}/{} (backoff {}ms)", name, attempt + 1, MAX_RETRIES, delay);
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+            }
+
+            match self.try_start_server(name).await {
+                Ok(tools) => return Ok(tools),
+                Err(e) => {
+                    last_error = e;
+                    if attempt < MAX_RETRIES - 1 {
+                        eprintln!("[McpHub][WARN] {} failed: {} — retrying...", name, last_error);
+                    }
+                }
+            }
+        }
+
+        Err(format!("{} (after {} attempts)", last_error, MAX_RETRIES))
+    }
+
+    /// Single attempt to start a server.
+    async fn try_start_server(&self, name: &str) -> Result<Vec<ToolDef>, String> {
         let config = self
             .configs
             .get(name)

@@ -8,6 +8,8 @@ use crate::protocol::ToolDef;
 pub struct SchemaCache {
     pub version: String,
     pub servers: HashMap<String, Vec<ToolDef>>,
+    #[serde(default)]
+    pub errors: HashMap<String, String>,
 }
 
 pub fn cache_path() -> Option<PathBuf> {
@@ -26,9 +28,14 @@ pub fn load_cache() -> Option<SchemaCache> {
 }
 
 pub fn save_cache(servers: &HashMap<String, Vec<ToolDef>>) {
+    save_cache_with_errors(servers, &HashMap::new());
+}
+
+pub fn save_cache_with_errors(servers: &HashMap<String, Vec<ToolDef>>, errors: &HashMap<String, String>) {
     let cache = SchemaCache {
         version: env!("CARGO_PKG_VERSION").to_string(),
         servers: servers.clone(),
+        errors: errors.clone(),
     };
     if let Some(path) = cache_path() {
         if let Some(parent) = path.parent() {
@@ -37,7 +44,39 @@ pub fn save_cache(servers: &HashMap<String, Vec<ToolDef>>) {
         if let Ok(json) = serde_json::to_string_pretty(&cache) {
             let _ = fs::write(&path, json);
             let total_tools: usize = servers.values().map(|v| v.len()).sum();
-            eprintln!("[McpHub][INFO] Saved cache: {} servers, {} tools", servers.len(), total_tools);
+            eprintln!("[McpHub][INFO] Saved cache: {} servers, {} tools, {} errors", servers.len(), total_tools, errors.len());
+        }
+    }
+}
+
+/// Update cache for a single server (repair). Merges into existing cache.
+pub fn repair_server_cache(name: &str, tools: Vec<ToolDef>) {
+    let mut cache = load_cache().unwrap_or_else(|| SchemaCache {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        servers: HashMap::new(),
+        errors: HashMap::new(),
+    });
+    cache.servers.insert(name.to_string(), tools);
+    cache.errors.remove(name);
+    if let Some(path) = cache_path() {
+        if let Ok(json) = serde_json::to_string_pretty(&cache) {
+            let _ = fs::write(&path, json);
+        }
+    }
+}
+
+/// Store an error for a server in cache
+pub fn set_server_error(name: &str, error: &str) {
+    let mut cache = load_cache().unwrap_or_else(|| SchemaCache {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        servers: HashMap::new(),
+        errors: HashMap::new(),
+    });
+    cache.errors.insert(name.to_string(), error.to_string());
+    cache.servers.remove(name);
+    if let Some(path) = cache_path() {
+        if let Ok(json) = serde_json::to_string_pretty(&cache) {
+            let _ = fs::write(&path, json);
         }
     }
 }

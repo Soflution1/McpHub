@@ -3,7 +3,6 @@
 //! Zero external dependencies — uses tokio::net::TcpListener directly.
 
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -149,6 +148,12 @@ fn handle_get_servers() -> Vec<u8> {
         .and_then(|v| v.as_object())
         .cloned()
         .unwrap_or_default();
+    let cached_errors = cache
+        .as_ref()
+        .and_then(|c| c.get("errors"))
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
 
     let mut result: Vec<Value> = Vec::new();
     let mut names: Vec<String> = servers_obj.keys().cloned().collect();
@@ -167,6 +172,8 @@ fn handle_get_servers() -> Vec<u8> {
             .unwrap_or_default();
         let tool_count = tools.len();
 
+        let error_msg = cached_errors.get(name).and_then(|v| v.as_str()).unwrap_or("");
+
         result.push(json!({
             "name": name,
             "command": srv.get("command").and_then(|v| v.as_str()).unwrap_or(""),
@@ -175,7 +182,8 @@ fn handle_get_servers() -> Vec<u8> {
             "disabled": srv.get("disabled").and_then(|v| v.as_bool()).unwrap_or(false),
             "tools": tool_count,
             "toolNames": tools,
-            "status": if cached.is_some() { "cached" } else { "uncached" }
+            "status": if cached.is_some() { "cached" } else if !error_msg.is_empty() { "error" } else { "uncached" },
+            "error": error_msg
         }));
     }
 
@@ -427,6 +435,267 @@ async fn handle_generate() -> Vec<u8> {
     }
 }
 
+// ─── Repair Handler ─────────────────────────────────────────
+
+async fn handle_repair_server(name: &str) -> Vec<u8> {
+    let config = read_config();
+    let key = if config.get("servers").and_then(|v| v.as_object()).is_some() { "servers" } else { "mcpServers" };
+    let servers = match config.get(key).and_then(|v| v.as_object()) {
+        Some(s) => s,
+        None => return json_err(404, "No servers configured"),
+    };
+    if !servers.contains_key(name) {
+        return json_err(404, "Server not found");
+    }
+
+    let srv = &servers[name];
+    let command = srv.get("command").and_then(|v| v.as_str()).unwrap_or("");
+    let args: Vec<String> = srv.get("args")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    // Step 1: Check if command exists
+    let cmd_check = tokio::process::Command::new("which")
+        .arg(command)
+        .output()
+        .await;
+    
+    let cmd_exists = cmd_check.map(|o| o.status.success()).unwrap_or(false);
+    if !cmd_exists {
+        // Try to find the command in common locations
+        let common_paths = [
+            format!("{}/.nvm/versions/node/v25.0.0/bin/{}", dirs::home_dir().unwrap_or_default().display(), command),
+            format!("{}/.nvm/versions/node/v22.22.0/bin/{}", dirs::home_dir().unwrap_or_default().display(), command),
+            format!("/opt/homebrew/bin/{}", command),
+            format!("/usr/local/bin/{}", command),
+        ];
+        let mut found_path = None;
+        for p in &common_paths {
+            if std::path::Path::new(p).exists() {
+                found_path = Some(p.clone());
+                break;
+            }
+        }
+        
+        if let Some(path) = found_path {
+            return json_ok(json!({
+                "ok": false,
+                "step": "command_not_in_path",
+                "error": format!("Command '{}' not in PATH but found at: {}", command, path),
+                "suggestion": format!("Update server command to: {}", path),
+                "auto_fixable": true,
+                "fix_command": path
+            }));
+        }
+        
+        return json_ok(json!({
+            "ok": false,
+            "step": "command_not_found",
+            "error": format!("Command '{}' not found anywhere", command),
+            "suggestion": "Check that the binary/package is installed",
+            "auto_fixable": false
+        }));
+    }
+
+    // Step 2: Try to start the server and get tools
+    let mut cmd = tokio::process::Command::new(command);
+    for arg in &args {
+        cmd.arg(arg);
+    }
+    
+    // Add env vars
+    if let Some(env_obj) = srv.get("env").and_then(|v| v.as_object()) {
+        for (k, v) in env_obj {
+            if let Some(val) = v.as_str() {
+                cmd.env(k, val);
+            }
+        }
+    }
+    
+    cmd.stdin(std::process::Stdio::piped())
+       .stdout(std::process::Stdio::piped())
+       .stderr(std::process::Stdio::piped());
+
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            return json_ok(json!({
+                "ok": false,
+                "step": "spawn_failed",
+                "error": format!("Failed to start: {}", e),
+                "suggestion": "Check command and arguments",
+                "auto_fixable": false
+            }));
+        }
+    };
+
+    // Give it 10 seconds to start
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        child.wait_with_output(),
+    ).await;
+
+    match output {
+        Ok(Ok(out)) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            
+            // Check for common errors
+            let combined = format!("{}\n{}", stderr, stdout);
+            
+            if combined.contains("MODULE_NOT_FOUND") || combined.contains("Cannot find module") {
+                let module = combined.lines()
+                    .find(|l| l.contains("Cannot find module"))
+                    .unwrap_or("unknown module")
+                    .to_string();
+                return json_ok(json!({
+                    "ok": false,
+                    "step": "module_not_found",
+                    "error": module,
+                    "suggestion": "Run: npm install or rebuild the project",
+                    "auto_fixable": false
+                }));
+            }
+            
+            if combined.contains("ENOENT") {
+                return json_ok(json!({
+                    "ok": false,
+                    "step": "file_not_found",
+                    "error": "A file referenced by the server does not exist",
+                    "detail": combined.lines().find(|l| l.contains("ENOENT")).unwrap_or("").to_string(),
+                    "suggestion": "Check file paths in args",
+                    "auto_fixable": false
+                }));
+            }
+            
+            if combined.contains("API") && (combined.contains("401") || combined.contains("403") || combined.contains("unauthorized") || combined.contains("Unauthorized")) {
+                return json_ok(json!({
+                    "ok": false,
+                    "step": "auth_error",
+                    "error": "Authentication failed - API key/token may be invalid or expired",
+                    "suggestion": "Update the API key/token in env vars",
+                    "auto_fixable": false
+                }));
+            }
+            
+            if combined.contains("ECONNREFUSED") || combined.contains("fetch failed") || combined.contains("network") {
+                return json_ok(json!({
+                    "ok": false,
+                    "step": "network_error",
+                    "error": "Network connection failed",
+                    "suggestion": "Check internet connection or service URL",
+                    "auto_fixable": false
+                }));
+            }
+
+            // If process exited quickly without MCP handshake, it crashed
+            if !out.status.success() {
+                return json_ok(json!({
+                    "ok": false,
+                    "step": "crash",
+                    "error": format!("Process exited with code {}", out.status.code().unwrap_or(-1)),
+                    "detail": combined.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"),
+                    "suggestion": "Check server logs above for details",
+                    "auto_fixable": false
+                }));
+            }
+
+            // If we got here, rebuild cache for this server
+            let bin = binary_path();
+            let gen_output = tokio::process::Command::new(&bin)
+                .arg("generate")
+                .output()
+                .await;
+
+            match gen_output {
+                Ok(gen_out) => {
+                    let gen_combined = format!("{}{}", 
+                        String::from_utf8_lossy(&gen_out.stderr),
+                        String::from_utf8_lossy(&gen_out.stdout)
+                    );
+                    let server_line = gen_combined.lines()
+                        .find(|l| l.contains(name))
+                        .unwrap_or("");
+                    
+                    if server_line.contains("FAILED") {
+                        let error_part = server_line.split("FAILED:").nth(1).unwrap_or("Unknown error").trim();
+                        json_ok(json!({
+                            "ok": false,
+                            "step": "generate_failed",
+                            "error": format!("Cache generation failed: {}", error_part),
+                            "suggestion": "Server starts but doesn't respond to MCP protocol",
+                            "auto_fixable": false
+                        }))
+                    } else {
+                        json_ok(json!({
+                            "ok": true,
+                            "step": "repaired",
+                            "message": format!("Server '{}' is working and cache has been rebuilt", name)
+                        }))
+                    }
+                }
+                Err(e) => json_ok(json!({
+                    "ok": false,
+                    "step": "generate_error",
+                    "error": format!("Cache rebuild failed: {}", e),
+                    "auto_fixable": false
+                }))
+            }
+        }
+        Ok(Err(e)) => {
+            json_ok(json!({
+                "ok": false,
+                "step": "process_error",
+                "error": format!("Process error: {}", e),
+                "auto_fixable": false
+            }))
+        }
+        Err(_) => {
+            // Timeout - server is still running, which is actually good for MCP servers
+            // They stay alive waiting for stdio input. Rebuild cache.
+            let bin = binary_path();
+            let gen_output = tokio::process::Command::new(&bin)
+                .arg("generate")
+                .output()
+                .await;
+            
+            match gen_output {
+                Ok(gen_out) => {
+                    let gen_combined = format!("{}{}", 
+                        String::from_utf8_lossy(&gen_out.stderr),
+                        String::from_utf8_lossy(&gen_out.stdout)
+                    );
+                    if gen_combined.contains(&format!("{} ... ", name)) && !gen_combined.contains("FAILED") {
+                        json_ok(json!({
+                            "ok": true,
+                            "step": "repaired",
+                            "message": format!("Server '{}' repaired and cache rebuilt", name)
+                        }))
+                    } else {
+                        let error_line = gen_combined.lines()
+                            .find(|l| l.contains(name) && l.contains("FAILED"))
+                            .unwrap_or("Unknown error");
+                        json_ok(json!({
+                            "ok": false,
+                            "step": "generate_failed",
+                            "error": error_line.to_string(),
+                            "suggestion": "Server starts but MCP handshake fails",
+                            "auto_fixable": false
+                        }))
+                    }
+                }
+                Err(e) => json_ok(json!({
+                    "ok": false,
+                    "step": "generate_error", 
+                    "error": format!("Cache rebuild failed: {}", e),
+                    "auto_fixable": false
+                }))
+            }
+        }
+    }
+}
+
 // ─── Router ──────────────────────────────────────────────────
 
 async fn route(req: &HttpRequest) -> Vec<u8> {
@@ -450,6 +719,10 @@ async fn route(req: &HttpRequest) -> Vec<u8> {
                     let name = &rest[..rest.len() - "/toggle".len()];
                     let decoded = urldecode(name);
                     handle_toggle_server(&decoded, &req.body)
+                } else if rest.ends_with("/repair") {
+                    let name = &rest[..rest.len() - "/repair".len()];
+                    let decoded = urldecode(name);
+                    handle_repair_server(&decoded).await
                 } else {
                     let decoded = urldecode(rest);
                     match &req.method[..] {

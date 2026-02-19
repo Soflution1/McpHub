@@ -184,9 +184,14 @@ header{display:flex;align-items:center;justify-content:space-between;padding:16p
       </div>
       <div class="json-error hidden" id="edit-json-error"></div>
       <div id="edit-info-box"></div>
+      <div id="repair-section"></div>
       <div class="modal-actions modal-actions-between">
         <button class="btn btn-danger" onclick="deleteCurrentServer()">Delete</button>
-        <div style="display:flex;gap:8px"><button class="btn btn-ghost" onclick="hideEditModal()">Cancel</button><button class="btn btn-primary" onclick="updateServer()">Save</button></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost" id="repair-btn" onclick="repairServer()" style="display:none">🔧 Repair</button>
+          <button class="btn btn-ghost" onclick="hideEditModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="updateServer()">Save</button>
+        </div>
       </div>
     </div>
   </div>
@@ -217,8 +222,8 @@ header{display:flex;align-items:center;justify-content:space-between;padding:16p
 let servers=[], settings={mode:'discover',idleTimeout:300}, totalTools=0, cacheExists=false;
 let currentView='servers', editingServerName=null;
 
-const ICONS={'github':'🐙','filesystem':'📁','supabase':'⚡','stripe':'💳','playwright':'🎭','firecrawl':'🔥','memory':'🧠','openmemory':'🧠','chrome-devtools':'🔧','desktop-commander':'🖥️','resend':'📧','lighthouse':'💡','magic':'✨','sequential-thinking':'🔗','context7':'📚','svelte':'🟠','browserbase':'🌐','cloudflare-docs':'☁️','cloudflare-agents-docs':'☁️','app-store-connect':'🍎','xcodemcp':'📱','task-master':'📋'};
-const CATS={'github':'DevOps','filesystem':'System','supabase':'Database','stripe':'Payments','playwright':'Testing','firecrawl':'Web Scraping','memory':'AI','openmemory':'AI','chrome-devtools':'DevTools','desktop-commander':'System','resend':'Email','lighthouse':'Performance','magic':'AI','sequential-thinking':'AI','context7':'Docs','svelte':'Frontend','browserbase':'Testing','cloudflare-docs':'Infra','cloudflare-agents-docs':'Infra','app-store-connect':'Mobile','xcodemcp':'Mobile','task-master':'Project'};
+const ICONS={'github':'🐙','filesystem':'📁','supabase':'⚡','stripe':'💳','playwright':'🎭','firecrawl':'🔥','deepcrawl':'🕷️','MemoryPilot':'🧠','memory':'🧠','openmemory':'🧠','chrome-devtools':'🔧','desktop-commander':'🖥️','resend':'📧','lighthouse':'💡','magic':'✨','sequential-thinking':'🔗','context7':'📚','svelte':'🟠','browserbase':'🌐','browser-mcp':'🌐','cloudflare':'☁️','cloudflare-docs':'☁️','cloudflare-agents-docs':'☁️','app-store-connect':'🍎','xcodemcp':'📱','task-master':'📋','brandcheck':'🔍','depsonar':'📡','stitch':'🧵','recraft':'🎨'};
+const CATS={'github':'DevOps','filesystem':'System','supabase':'Database','stripe':'Payments','playwright':'Testing','firecrawl':'Web Scraping','deepcrawl':'Web Scraping','MemoryPilot':'AI','memory':'AI','openmemory':'AI','chrome-devtools':'DevTools','desktop-commander':'System','resend':'Email','lighthouse':'Performance','magic':'AI','sequential-thinking':'AI','context7':'Docs','svelte':'Frontend','browserbase':'Testing','browser-mcp':'Browser','cloudflare':'Infra','cloudflare-docs':'Infra','cloudflare-agents-docs':'Infra','app-store-connect':'Mobile','xcodemcp':'Mobile','task-master':'Project','brandcheck':'Tools','depsonar':'Tools','stitch':'Design','recraft':'Design'};
 function icon(n){return ICONS[n]||'🔌'}
 function cat(n){return CATS[n]||'Custom'}
 
@@ -325,7 +330,10 @@ function renderGrid(){
           <div class="toggle-knob"></div>
         </label>
       </div>
-      <div class="card-meta"><span>${s.tools} tools</span></div>
+      <div class="card-meta">${s.status==='cached'
+        ?`<span>${s.tools} tools</span>`
+        :`<span style="color:var(--danger)">✗ Not cached</span><span style="color:var(--text-dim);font-size:10px">Click to diagnose</span>`
+      }</div>
       <div class="card-cat">${cat(s.name)}</div>
     </div>`).join('');
 }
@@ -388,14 +396,69 @@ function openEdit(name){
   syncHighlight('edit');
   document.getElementById('edit-json-error').classList.add('hidden');
   const ib=document.getElementById('edit-info-box');
+  const rb=document.getElementById('repair-btn');
+  const rs=document.getElementById('repair-section');
+  rs.innerHTML='';
   if(s.status==='cached'){
-    ib.innerHTML=`<div class="info-box info-ok"><div class="info-title">${s.tools} Tools Cached</div><div class="info-desc">${(s.toolNames||[]).slice(0,5).join(', ')}${s.toolNames&&s.toolNames.length>5?'...':''}</div></div>`;
+    ib.innerHTML=`<div class="info-box info-ok"><div class="info-title">✓ ${s.tools} Tools Cached</div><div class="info-desc">${(s.toolNames||[]).slice(0,8).join(', ')}${s.toolNames&&s.toolNames.length>8?' + '+(s.toolNames.length-8)+' more':''}</div></div>`;
+    rb.style.display='none';
   }else{
-    ib.innerHTML='<div class="info-box info-fail"><div class="info-title">Not Cached</div><div class="info-desc">Run Rebuild Cache to index</div></div>';
+    ib.innerHTML=`<div class="info-box info-fail"><div class="info-title">✗ Not Cached</div><div class="info-desc">This server failed during cache generation or hasn't been indexed yet.</div></div>`;
+    rb.style.display='inline-flex';
   }
   document.getElementById('edit-modal').classList.remove('hidden');
 }
 function hideEditModal(){document.getElementById('edit-modal').classList.add('hidden');editingServerName=null}
+
+async function repairServer(){
+  if(!editingServerName)return;
+  const rb=document.getElementById('repair-btn');
+  const rs=document.getElementById('repair-section');
+  rb.disabled=true;rb.innerHTML='<span class="spinner"></span>Diagnosing...';
+  rs.innerHTML='<div class="info-box" style="background:var(--accent-dim);border-color:rgba(251,191,36,.2);color:var(--accent)"><div class="info-title">⏳ Running diagnostics...</div><div class="info-desc">Testing command, dependencies, network, auth...</div></div>';
+  
+  try{
+    const res=await fetch('/api/servers/'+encodeURIComponent(editingServerName)+'/repair',{method:'POST'});
+    const data=await res.json();
+    
+    if(data.ok){
+      rs.innerHTML=`<div class="info-box info-ok"><div class="info-title">✓ ${data.message||'Repaired!'}</div><div class="info-desc">Cache rebuilt successfully. Refresh to see changes.</div></div>`;
+      notify('Server repaired!');
+      await fetchServers();
+      // Update the edit modal info
+      const s=servers.find(x=>x.name===editingServerName);
+      if(s&&s.status==='cached'){
+        document.getElementById('edit-info-box').innerHTML=`<div class="info-box info-ok"><div class="info-title">✓ ${s.tools} Tools Cached</div><div class="info-desc">${(s.toolNames||[]).slice(0,8).join(', ')}${s.toolNames&&s.toolNames.length>8?' + '+(s.toolNames.length-8)+' more':''}</div></div>`;
+        rb.style.display='none';
+      }
+    }else{
+      let html=`<div class="info-box info-fail"><div class="info-title">✗ ${data.step.replace(/_/g,' ').toUpperCase()}</div><div class="info-desc">${data.error||'Unknown error'}</div>`;
+      if(data.detail)html+=`<pre style="margin-top:8px;font-size:10px;color:var(--text-dim);white-space:pre-wrap;font-family:monospace;background:var(--bg);padding:8px;border-radius:6px;max-height:120px;overflow-y:auto">${data.detail}</pre>`;
+      if(data.suggestion)html+=`<div style="margin-top:6px;font-size:11px;color:var(--accent)">💡 ${data.suggestion}</div>`;
+      if(data.auto_fixable&&data.fix_command){
+        html+=`<button class="btn btn-primary" style="margin-top:10px;font-size:11px" onclick="autoFixCommand('${editingServerName}','${data.fix_command.replace(/'/g,"\\'")}')">⚡ Auto-fix: Update command path</button>`;
+      }
+      html+='</div>';
+      rs.innerHTML=html;
+      notify('Repair failed: '+data.step,'danger');
+    }
+  }catch(e){
+    rs.innerHTML=`<div class="info-box info-fail"><div class="info-title">✗ Error</div><div class="info-desc">${e.message}</div></div>`;
+  }finally{
+    rb.disabled=false;rb.innerHTML='🔧 Repair';
+  }
+}
+
+async function autoFixCommand(name,newCommand){
+  // Read current config, update command path, save
+  const s=servers.find(x=>x.name===name);if(!s)return;
+  const res=await fetch('/api/servers/'+encodeURIComponent(name),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:newCommand})});
+  if(res.ok){
+    notify('Command updated, rebuilding cache...');
+    await regenerateCache();
+    await fetchServers();
+  }
+}
 async function updateServer(){
   if(!editingServerName)return;
   const raw=document.getElementById('edit-json').value;

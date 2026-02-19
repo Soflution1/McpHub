@@ -94,6 +94,7 @@ async fn cmd_generate() {
     ));
 
     let mut server_tools: std::collections::HashMap<String, Vec<protocol::ToolDef>> = std::collections::HashMap::new();
+    let mut server_errors: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut all_tools: Vec<IndexedTool> = Vec::new();
     let mut ok = 0;
     let mut fail = 0;
@@ -120,6 +121,7 @@ async fn cmd_generate() {
             }
             Err(e) => {
                 eprintln!("FAILED: {}", e);
+                server_errors.insert(name.clone(), e);
                 fail += 1;
             }
         }
@@ -129,8 +131,8 @@ async fn cmd_generate() {
     let mut engine = SearchEngine::new();
     engine.build_index(all_tools);
 
-    // Save cache
-    cache::save_cache(&server_tools);
+    // Save cache with errors
+    cache::save_cache_with_errors(&server_tools, &server_errors);
 
     // Stop all servers
     manager.stop_all().await;
