@@ -25,6 +25,25 @@ fn cache_path() -> PathBuf {
     config_dir().join("schema-cache.json")
 }
 
+pub fn get_auth_token() -> String {
+    let path = config_dir().join("auth-token");
+    if let Ok(token) = fs::read_to_string(&path) {
+        let token = token.trim().to_string();
+        if !token.is_empty() {
+            return token;
+        }
+    }
+    
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let token = format!("mcphub_{:x}", nanos);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::write(&path, &token);
+    token
+}
+
 fn binary_path() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| {
         dirs::home_dir()
@@ -73,6 +92,7 @@ fn read_cache() -> Option<Value> {
 struct HttpRequest {
     method: String,
     path: String,
+    headers: std::collections::HashMap<String, String>,
     body: String,
 }
 
@@ -86,15 +106,19 @@ fn parse_request(raw: &str) -> Option<HttpRequest> {
     let method = parts[0].to_string();
     let path = parts[1].to_string();
 
-    // Find Content-Length
+    let mut headers = std::collections::HashMap::new();
     let mut content_length: usize = 0;
-    for line in raw.lines() {
+    for line in raw.lines().skip(1) {
         if line.is_empty() || line == "\r" {
             break;
         }
-        let lower = line.to_lowercase();
-        if let Some(val) = lower.strip_prefix("content-length:") {
-            content_length = val.trim().parse().unwrap_or(0);
+        if let Some((k, v)) = line.split_once(':') {
+            let key = k.trim().to_lowercase();
+            let val = v.trim().to_string();
+            if key == "content-length" {
+                content_length = val.parse().unwrap_or(0);
+            }
+            headers.insert(key, val);
         }
     }
 
@@ -110,7 +134,7 @@ fn parse_request(raw: &str) -> Option<HttpRequest> {
         String::new()
     };
 
-    Some(HttpRequest { method, path, body })
+    Some(HttpRequest { method, path, headers, body })
 }
 
 fn http_response(status: u16, status_text: &str, content_type: &str, body: &str) -> Vec<u8> {
@@ -828,16 +852,65 @@ async fn handle_connection(
     proxy: Option<Arc<ProxyServer>>,
     sse: Option<Arc<SseManager>>,
 ) {
-    // Read timeout: 10s max to receive headers + body. Prevents Slowloris.
+    // Add CORS OPTIONS handler
     let mut buf = vec![0u8; 65536];
-    let n = match tokio::time::timeout(
+    let mut total_read = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
         stream.read(&mut buf),
     ).await {
         Ok(Ok(n)) if n > 0 => n,
         _ => return, // Timeout or read error: drop connection
     };
-    let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+
+    // Check if it's an OPTIONS request early
+    if total_read >= 7 && &buf[..7] == b"OPTIONS" {
+        let resp = b"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 86400\r\nContent-Length: 0\r\n\r\n";
+        let _ = stream.write_all(resp).await;
+        return;
+    }
+
+    // Find end of headers
+    let mut body_offset = 0;
+    for i in 0..total_read.saturating_sub(3) {
+        if &buf[i..i+4] == b"\r\n\r\n" {
+            body_offset = i + 4;
+            break;
+        } else if i < total_read.saturating_sub(1) && &buf[i..i+2] == b"\n\n" {
+            body_offset = i + 2;
+            break;
+        }
+    }
+
+    if body_offset > 0 {
+        // Find Content-Length
+        let headers_str = String::from_utf8_lossy(&buf[..body_offset]);
+        let mut content_length: usize = 0;
+        for line in headers_str.lines() {
+            let lower = line.to_lowercase();
+            if let Some(val) = lower.strip_prefix("content-length:") {
+                content_length = val.trim().parse().unwrap_or(0);
+                break;
+            }
+        }
+
+        // Read the rest of the body if needed
+        let target_size = body_offset + content_length;
+        if target_size > buf.len() {
+            buf.resize(target_size, 0);
+        }
+        while total_read < target_size {
+            let n = match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                stream.read(&mut buf[total_read..]),
+            ).await {
+                Ok(Ok(n)) if n > 0 => n,
+                _ => return, // Timeout or read error
+            };
+            total_read += n;
+        }
+    }
+
+    let raw = String::from_utf8_lossy(&buf[..total_read]).to_string();
 
     let req = match parse_request(&raw) {
         Some(r) => r,
@@ -846,8 +919,18 @@ async fn handle_connection(
 
     let path = req.path.split('?').next().unwrap_or(&req.path).to_string();
 
+    let expected_auth = format!("Bearer {}", get_auth_token());
+
     // SSE endpoint: long-lived connection, don't close
     if path == "/sse" && req.method == "GET" {
+        let auth = req.headers.get("authorization").map(|s| s.as_str()).unwrap_or("");
+        if auth != expected_auth {
+            let resp = json_err(401, "Unauthorized");
+            let _ = stream.write_all(&resp).await;
+            let _ = stream.shutdown().await;
+            return;
+        }
+
         if let Some(sse_mgr) = &sse {
             sse_mgr.handle_connect(stream).await;
             return; // Connection handled, don't close
@@ -861,6 +944,14 @@ async fn handle_connection(
 
     // Message endpoint: process JSON-RPC via SSE session
     if path == "/message" && req.method == "POST" {
+        let auth = req.headers.get("authorization").map(|s| s.as_str()).unwrap_or("");
+        if auth != expected_auth {
+            let resp = json_err(401, "Unauthorized");
+            let _ = stream.write_all(&resp).await;
+            let _ = stream.shutdown().await;
+            return;
+        }
+
         let response = if let (Some(proxy_ref), Some(sse_mgr)) = (&proxy, &sse) {
             if let Some(session_id) = extract_session_id(&req.path) {
                 sse_mgr.handle_message(&session_id, &req.body, proxy_ref).await

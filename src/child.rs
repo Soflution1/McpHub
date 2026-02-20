@@ -22,7 +22,7 @@ struct ChildProcess {
 }
 
 pub struct ChildManager {
-    configs: HashMap<String, ServerConfig>,
+    configs: Arc<Mutex<HashMap<String, ServerConfig>>>,
     children: Arc<Mutex<HashMap<String, ChildProcess>>>,
     idle_timeout_ms: u64,
 }
@@ -30,29 +30,52 @@ pub struct ChildManager {
 impl ChildManager {
     pub fn new(configs: HashMap<String, ServerConfig>, idle_timeout_ms: u64) -> Self {
         Self {
-            configs,
+            configs: Arc::new(Mutex::new(configs)),
             children: Arc::new(Mutex::new(HashMap::new())),
             idle_timeout_ms,
         }
     }
 
+    pub async fn update_configs(&self, new_configs: HashMap<String, ServerConfig>) {
+        let mut current_configs = self.configs.lock().await;
+        
+        // Find removed or changed servers and stop them
+        let mut to_stop = Vec::new();
+        for (name, old_cfg) in current_configs.iter() {
+            if let Some(new_cfg) = new_configs.get(name) {
+                if old_cfg != new_cfg {
+                    to_stop.push(name.clone());
+                }
+            } else {
+                to_stop.push(name.clone());
+            }
+        }
+
+        for name in to_stop {
+            self.stop_server(&name).await;
+        }
+
+        *current_configs = new_configs;
+    }
+
     /// Resolve a server name case-insensitively.
     /// Matches exact first, then case-insensitive, then kebab/snake normalization.
-    fn resolve_name(&self, name: &str) -> Option<String> {
+    async fn resolve_name(&self, name: &str) -> Option<String> {
+        let configs = self.configs.lock().await;
         // 1. Exact match
-        if self.configs.contains_key(name) {
+        if configs.contains_key(name) {
             return Some(name.to_string());
         }
         // 2. Case-insensitive match
         let lower = name.to_lowercase();
-        for key in self.configs.keys() {
+        for key in configs.keys() {
             if key.to_lowercase() == lower {
                 return Some(key.clone());
             }
         }
         // 3. Normalize: strip hyphens/underscores, compare lowercase
         let normalized = lower.replace(['-', '_'], "");
-        for key in self.configs.keys() {
+        for key in configs.keys() {
             let key_normalized = key.to_lowercase().replace(['-', '_'], "");
             if key_normalized == normalized {
                 return Some(key.clone());
@@ -63,9 +86,9 @@ impl ChildManager {
 
     /// Start a server by name with retry logic. Returns its tools list.
     pub async fn start_server(&self, name: &str) -> Result<Vec<ToolDef>, String> {
-        let name = self.resolve_name(name)
+        let name_resolved = self.resolve_name(name).await
             .ok_or_else(|| format!("Unknown server: {}", name))?;
-        let name = name.as_str();
+        let name = name_resolved.as_str();
 
         // Already running?
         {
@@ -103,11 +126,13 @@ impl ChildManager {
 
     /// Single attempt to start a server.
     async fn try_start_server(&self, name: &str) -> Result<Vec<ToolDef>, String> {
-        let config = self
-            .configs
-            .get(name)
-            .ok_or_else(|| format!("Unknown server: {}", name))?
-            .clone();
+        let config = {
+            let configs = self.configs.lock().await;
+            configs
+                .get(name)
+                .ok_or_else(|| format!("Unknown server: {}", name))?
+                .clone()
+        };
 
         let start = Instant::now();
         eprintln!("[McpHub][INFO] Starting server: {}", name);
@@ -188,7 +213,7 @@ impl ChildManager {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        let resolved = self.resolve_name(server_name)
+        let resolved = self.resolve_name(server_name).await
             .ok_or_else(|| format!("Unknown server: {}", server_name))?;
         let server_name = resolved.as_str();
 
@@ -197,24 +222,49 @@ impl ChildManager {
             self.start_server(server_name).await?;
         }
 
-        let mut children = self.children.lock().await;
-        let proc = children
-            .get_mut(server_name)
-            .ok_or_else(|| format!("Server not running: {}", server_name))?;
+        let result = {
+            let mut children = self.children.lock().await;
+            let proc = children
+                .get_mut(server_name)
+                .ok_or_else(|| format!("Server not running: {}", server_name))?;
 
-        proc.last_used = Instant::now();
+            proc.last_used = Instant::now();
 
-        let result = send_request(
-            proc,
-            "tools/call",
-            serde_json::json!({
-                "name": tool_name,
-                "arguments": arguments,
-            }),
-        )
-        .await?;
+            send_request(
+                proc,
+                "tools/call",
+                serde_json::json!({
+                    "name": tool_name,
+                    "arguments": arguments.clone(),
+                }),
+            )
+            .await
+        };
 
-        Ok(result)
+        match result {
+            Err(e) if is_connection_error(&e) => {
+                eprintln!("[McpHub][WARN] Connection error on '{}': {}. Retrying...", server_name, e);
+                self.restart_server(server_name).await?;
+                
+                let mut children = self.children.lock().await;
+                let proc = children
+                    .get_mut(server_name)
+                    .ok_or_else(|| format!("Server not running: {}", server_name))?;
+
+                proc.last_used = Instant::now();
+
+                send_request(
+                    proc,
+                    "tools/call",
+                    serde_json::json!({
+                        "name": tool_name,
+                        "arguments": arguments,
+                    }),
+                )
+                .await
+            }
+            other => other,
+        }
     }
 
     pub async fn is_running(&self, name: &str) -> bool {
@@ -242,8 +292,9 @@ impl ChildManager {
     }
 
     /// Returns list of all configured server names.
-    pub fn server_names(&self) -> Vec<String> {
-        self.configs.keys().cloned().collect()
+    pub async fn server_names(&self) -> Vec<String> {
+        let configs = self.configs.lock().await;
+        configs.keys().cloned().collect()
     }
 
     /// Run idle reaper: stop servers not used in idle_timeout_ms.
@@ -333,6 +384,10 @@ impl ChildManager {
         let tools = self.start_server(name).await?;
         Ok(tools.len())
     }
+}
+
+fn is_connection_error(e: &str) -> bool {
+    e.contains("Write error") || e.contains("Flush error") || e.contains("Read error") || e.contains("Server closed connection")
 }
 
 // ─── MCP Protocol Communication ─────────────────────────────

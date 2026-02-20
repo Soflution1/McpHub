@@ -12,7 +12,7 @@ use crate::protocol::*;
 use crate::search::{IndexedTool, SearchEngine};
 
 pub struct ProxyServer {
-    config: ProxyConfig,
+    config: Arc<Mutex<ProxyConfig>>,
     child_manager: Arc<ChildManager>,
     search_engine: Arc<Mutex<SearchEngine>>,
 }
@@ -25,7 +25,7 @@ impl ProxyServer {
         ));
 
         Self {
-            config,
+            config: Arc::new(Mutex::new(config)),
             child_manager,
             search_engine: Arc::new(Mutex::new(SearchEngine::new())),
         }
@@ -66,18 +66,21 @@ impl ProxyServer {
             }
         });
 
-        // 3. Start cache hot-reload watcher
+        // 3. Start config & cache hot-reload watcher
         let engine_watch = self.search_engine.clone();
+        let config_watch = self.config.clone();
+        let child_manager_watch = self.child_manager.clone();
         tokio::spawn(async move {
-            cache_watcher(engine_watch).await;
+            config_and_cache_watcher(engine_watch, config_watch, child_manager_watch).await;
         });
 
         // 4. Start health monitor (notifications + auto-restart)
-        if self.config.health_notifications {
+        let config = self.config.lock().await;
+        if config.health_notifications {
             let monitor = HealthMonitor::new(
                 self.child_manager.clone(),
-                self.config.health_check_interval_secs,
-                self.config.health_auto_restart,
+                config.health_check_interval_secs,
+                config.health_auto_restart,
             );
             tokio::spawn(async move {
                 monitor.run().await;
@@ -95,9 +98,10 @@ impl ProxyServer {
         self.child_manager.stop_all().await;
     }
 
-    fn servers_to_preload(&self) -> Vec<String> {
-        match &self.config.preload {
-            Preload::All => self.child_manager.server_names(),
+    async fn servers_to_preload(&self) -> Vec<String> {
+        let config = self.config.lock().await;
+        match &config.preload {
+            Preload::All => self.child_manager.server_names().await,
             Preload::Some(names) => names.clone(),
             Preload::None => Vec::new(),
         }
@@ -136,7 +140,7 @@ impl ProxyServer {
 
     pub async fn handle_request(&self, req: JsonRpcRequest) -> Option<JsonRpcResponse> {
         match req.method.as_str() {
-            "initialize" => Some(self.handle_initialize(req.id)),
+            "initialize" => Some(self.handle_initialize(req.id).await),
             "notifications/initialized" => None,
             "tools/list" => Some(self.handle_tools_list(req.id).await),
             "tools/call" => Some(self.handle_tools_call(req.id, req.params).await),
@@ -158,8 +162,9 @@ impl ProxyServer {
         }
     }
 
-    fn handle_initialize(&self, id: Option<serde_json::Value>) -> JsonRpcResponse {
-        let mode_str = match self.config.mode {
+    async fn handle_initialize(&self, id: Option<serde_json::Value>) -> JsonRpcResponse {
+        let config = self.config.lock().await;
+        let mode_str = match config.mode {
             Mode::Discover => "discover",
             Mode::Passthrough => "passthrough",
         };
@@ -167,7 +172,7 @@ impl ProxyServer {
         eprintln!(
             "[McpHub][INFO] Initialize: mode={}, servers={}",
             mode_str,
-            self.config.servers.len()
+            config.servers.len()
         );
 
         let result = InitializeResult {
@@ -195,17 +200,24 @@ impl ProxyServer {
         &self,
         id: Option<serde_json::Value>,
     ) -> JsonRpcResponse {
-        let tools = match self.config.mode {
-            Mode::Discover => self.get_discover_tools(),
+        let mode = {
+            let config = self.config.lock().await;
+            config.mode.clone()
+        };
+
+        let tools = match mode {
+            Mode::Discover => self.get_discover_tools().await,
             Mode::Passthrough => self.get_passthrough_tools().await,
         };
 
         JsonRpcResponse::success(id, serde_json::json!({ "tools": tools }))
     }
 
-    fn get_discover_tools(&self) -> serde_json::Value {
-        // Build dynamic server list for tool descriptions
-        let mut server_names: Vec<String> = self.config.servers.keys().cloned().collect();
+    async fn get_discover_tools(&self) -> serde_json::Value {
+        let mut server_names: Vec<String> = {
+            let config = self.config.lock().await;
+            config.servers.keys().cloned().collect()
+        };
         server_names.sort();
         let server_list = server_names.join(", ");
 
@@ -307,7 +319,12 @@ impl ProxyServer {
             .cloned()
             .unwrap_or(serde_json::json!({}));
 
-        match self.config.mode {
+        let mode = {
+            let config = self.config.lock().await;
+            config.mode.clone()
+        };
+
+        match mode {
             Mode::Discover => match tool_name {
                 "discover" => self.handle_discover(id, arguments).await,
                 "execute" => self.handle_execute(id, arguments).await,
@@ -330,7 +347,10 @@ impl ProxyServer {
         let top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(10).min(50) as usize;
 
         // Always provide the full server list
-        let mut all_server_names: Vec<String> = self.config.servers.keys().cloned().collect();
+        let mut all_server_names: Vec<String> = {
+            let config = self.config.lock().await;
+            config.servers.keys().cloned().collect()
+        };
         all_server_names.sort();
 
         let engine = self.search_engine.lock().await;
@@ -370,7 +390,10 @@ impl ProxyServer {
         drop(engine);
 
         let query_lower = query.to_lowercase();
-        let mut server_names: Vec<String> = self.config.servers.keys().cloned().collect();
+        let mut server_names: Vec<String> = {
+            let config = self.config.lock().await;
+            config.servers.keys().cloned().collect()
+        };
         server_names.sort();
 
         let mut matches: Vec<serde_json::Value> = Vec::new();
@@ -540,50 +563,80 @@ async fn preload_servers(
     eng.build_index(all_tools);
 }
 
-/// Watches schema-cache.json for changes and hot-reloads the search index.
-async fn cache_watcher(engine: Arc<Mutex<SearchEngine>>) {
+/// Watches schema-cache.json and config.json for changes and hot-reloads them.
+async fn config_and_cache_watcher(
+    engine: Arc<Mutex<SearchEngine>>,
+    config_store: Arc<Mutex<ProxyConfig>>,
+    child_manager: Arc<ChildManager>,
+) {
     use std::time::SystemTime;
 
-    let path = match crate::cache::cache_path() {
-        Some(p) => p,
-        None => return,
-    };
+    let cache_path_opt = crate::cache::cache_path();
+    let mut last_cache_modified: Option<SystemTime> = cache_path_opt
+        .as_ref()
+        .and_then(|p| p.metadata().ok())
+        .and_then(|m| m.modified().ok());
 
-    let mut last_modified: Option<SystemTime> = path
-        .metadata()
-        .ok()
+    let config_path_opt = dirs::home_dir().map(|h| h.join(".McpHub/config.json"));
+    let mut last_config_modified: Option<SystemTime> = config_path_opt
+        .as_ref()
+        .and_then(|p| p.metadata().ok())
         .and_then(|m| m.modified().ok());
 
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
 
-        let current_modified = match path.metadata() {
-            Ok(m) => m.modified().ok(),
-            Err(_) => continue,
-        };
+        // Check Cache
+        if let Some(cache_path) = &cache_path_opt {
+            if let Ok(m) = cache_path.metadata() {
+                if let Ok(current_modified) = m.modified() {
+                    if Some(current_modified) != last_cache_modified {
+                        last_cache_modified = Some(current_modified);
 
-        if current_modified != last_modified {
-            last_modified = current_modified;
-
-            if let Some(cached) = crate::cache::load_cache() {
-                let mut all_tools: Vec<IndexedTool> = Vec::new();
-                for (server_name, tools) in &cached.servers {
-                    for tool in tools {
-                        all_tools.push(IndexedTool {
-                            name: format!("{}__{}", server_name, tool.name),
-                            original_name: tool.name.clone(),
-                            server_name: server_name.to_string(),
-                            description: tool.description.clone(),
-                            tool_def: tool.clone(),
-                        });
+                        if let Some(cached) = crate::cache::load_cache() {
+                            let mut all_tools: Vec<IndexedTool> = Vec::new();
+                            for (server_name, tools) in &cached.servers {
+                                for tool in tools {
+                                    all_tools.push(IndexedTool {
+                                        name: format!("{}__{}", server_name, tool.name),
+                                        original_name: tool.name.clone(),
+                                        server_name: server_name.to_string(),
+                                        description: tool.description.clone(),
+                                        tool_def: tool.clone(),
+                                    });
+                                }
+                            }
+                            let mut eng = engine.lock().await;
+                            eng.build_index(all_tools);
+                            eprintln!(
+                                "[McpHub][INFO] Cache hot-reloaded: {} tools",
+                                eng.tool_count()
+                            );
+                        }
                     }
                 }
-                let mut eng = engine.lock().await;
-                eng.build_index(all_tools);
-                eprintln!(
-                    "[McpHub][INFO] Cache hot-reloaded: {} tools",
-                    eng.tool_count()
-                );
+            }
+        }
+
+        // Check Config
+        if let Some(config_path) = &config_path_opt {
+            if let Ok(m) = config_path.metadata() {
+                if let Ok(current_modified) = m.modified() {
+                    if Some(current_modified) != last_config_modified {
+                        last_config_modified = Some(current_modified);
+
+                        let new_config = crate::config::auto_detect();
+                        let new_servers = new_config.servers.clone();
+                        
+                        {
+                            let mut cfg = config_store.lock().await;
+                            *cfg = new_config;
+                        }
+
+                        child_manager.update_configs(new_servers).await;
+                        eprintln!("[McpHub][INFO] Config hot-reloaded");
+                    }
+                }
             }
         }
     }

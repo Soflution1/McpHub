@@ -59,6 +59,7 @@ r#"<?xml version="1.0" encoding="UTF-8"?>
             .expect("Failed to run launchctl");
 
         if output.status.success() {
+            let token = crate::dashboard::get_auth_token();
             println!("✓ McpHub installed as LaunchAgent");
             println!("  Plist: {}", plist_path.display());
             println!("  Log:   ~/.McpHub/mcphub.log");
@@ -68,7 +69,8 @@ r#"<?xml version="1.0" encoding="UTF-8"?>
             println!("  {{");
             println!("    \"mcpServers\": {{");
             println!("      \"McpHub\": {{");
-            println!("        \"url\": \"http://127.0.0.1:24680/sse\"");
+            println!("        \"url\": \"http://127.0.0.1:24680/sse\",");
+            println!("        \"headers\": {{\"Authorization\": \"Bearer {}\"}}", token);
             println!("      }}");
             println!("    }}");
             println!("  }}");
@@ -113,8 +115,19 @@ WantedBy=default.target"#,
             .expect("Failed to run systemctl");
 
         if output.status.success() {
+            let token = crate::dashboard::get_auth_token();
             println!("✓ McpHub installed as systemd user service");
             println!("  Unit: {}", service_path.display());
+            println!();
+            println!("  Cursor config (~/.cursor/mcp.json):");
+            println!("  {{");
+            println!("    \"mcpServers\": {{");
+            println!("      \"McpHub\": {{");
+            println!("        \"url\": \"http://127.0.0.1:24680/sse\",");
+            println!("        \"headers\": {{\"Authorization\": \"Bearer {}\"}}", token);
+            println!("      }}");
+            println!("    }}");
+            println!("  }}");
         } else {
             eprintln!("✗ systemctl enable failed: {}", String::from_utf8_lossy(&output.stderr));
         }
@@ -130,7 +143,18 @@ WantedBy=default.target"#,
             .expect("Failed to run reg");
 
         if output.status.success() {
+            let token = crate::dashboard::get_auth_token();
             println!("✓ McpHub installed in Windows startup registry");
+            println!();
+            println!("  Cursor config (~/.cursor/mcp.json):");
+            println!("  {{");
+            println!("    \"mcpServers\": {{");
+            println!("      \"McpHub\": {{");
+            println!("        \"url\": \"http://127.0.0.1:24680/sse\",");
+            println!("        \"headers\": {{\"Authorization\": \"Bearer {}\"}}", token);
+            println!("      }}");
+            println!("    }}");
+            println!("  }}");
         } else {
             eprintln!("✗ Registry write failed: {}", String::from_utf8_lossy(&output.stderr));
         }

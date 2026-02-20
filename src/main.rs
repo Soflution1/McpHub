@@ -38,15 +38,15 @@ TRANSPORT MODES:
     Starts stdio proxy AND HTTP server on :24680 (dashboard + SSE)
 
   Serve (HTTP only, recommended):
-    Cursor config: {{"mcpServers": {{"McpHub": {{"url": "http://127.0.0.1:24680/sse"}}}}}}
-    Run 'McpHub install' to auto-start, then configure Cursor with URL.
+    Cursor config: {{"mcpServers": {{"McpHub": {{"url": "http://127.0.0.1:24680/sse", "headers": {{"Authorization": "Bearer <token>"}}}}}}}}
+    Run 'McpHub install' to auto-start, then configure Cursor with URL and token.
     Survives Cursor restarts. Single process for everything.
 
 FIRST TIME SETUP:
   1. Configure servers in ~/.McpHub/config.json
   2. Run: McpHub generate    (one-time, ~60s)
-  3. Run: McpHub install     (auto-start at login)
-  4. Configure Cursor with URL: http://127.0.0.1:24680/sse
+  3. Run: McpHub install     (auto-start at login, prints auth token)
+  4. Configure Cursor with URL and auth token
 "#,
         VERSION = VERSION
     );
