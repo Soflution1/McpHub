@@ -180,6 +180,26 @@ async fn cmd_serve() {
     let proxy = std::sync::Arc::new(ProxyServer::new(config));
     proxy.init().await;
     eprintln!("[McpHub][SERVE] Ready. Waiting for SSE connections on http://127.0.0.1:24680/sse");
+
+    let proxy_shutdown = proxy.clone();
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = sigterm.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            tokio::signal::ctrl_c().await.ok();
+        }
+        eprintln!("\n[McpHub] Shutting down gracefully...");
+        proxy_shutdown.shutdown().await;
+        std::process::exit(0);
+    });
+
     dashboard::start_server(proxy).await;
 }
 
@@ -208,6 +228,25 @@ async fn main() {
 
             // Init proxy (load cache, start background tasks)
             proxy.init().await;
+
+            let proxy_shutdown = proxy.clone();
+            tokio::spawn(async move {
+                #[cfg(unix)]
+                {
+                    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {}
+                        _ = sigterm.recv() => {}
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    tokio::signal::ctrl_c().await.ok();
+                }
+                eprintln!("\n[McpHub] Shutting down gracefully...");
+                proxy_shutdown.shutdown().await;
+                std::process::exit(0);
+            });
 
             // Try to start HTTP server in background (non-blocking if port taken)
             let proxy_http = proxy.clone();

@@ -91,6 +91,10 @@ impl ProxyServer {
         self.stdio_loop().await;
     }
 
+    pub async fn shutdown(&self) {
+        self.child_manager.stop_all().await;
+    }
+
     fn servers_to_preload(&self) -> Vec<String> {
         match &self.config.preload {
             Preload::All => self.child_manager.server_names(),
