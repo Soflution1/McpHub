@@ -99,7 +99,15 @@ pub struct InitializeResult {
 #[derive(Debug, Serialize)]
 pub struct Capabilities {
     pub tools: ToolsCapability,
+    pub prompts: PromptsCapability,
+    pub resources: ResourcesCapability,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ToolsCapability {}
+
+#[derive(Debug, Serialize)]
+pub struct PromptsCapability {}
+
+#[derive(Debug, Serialize)]
+pub struct ResourcesCapability {}

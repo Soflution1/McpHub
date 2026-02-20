@@ -3,9 +3,11 @@ pub mod child;
 mod config;
 mod dashboard;
 mod health;
+mod install;
 mod protocol;
 mod proxy;
 mod search;
+mod sse;
 
 use config::auto_detect;
 use proxy::ProxyServer;
@@ -19,31 +21,32 @@ fn print_help() {
 McpHub v{VERSION} — Fastest MCP proxy with BM25 tool discovery
 
 USAGE:
-  McpHub              Start proxy (loads from cache, instant)
+  McpHub              Start proxy (stdio + HTTP server on :24680)
+  McpHub serve        Start HTTP-only server (SSE transport, no stdio)
   McpHub generate     Start all servers, index tools, save cache
   McpHub dashboard    Open web dashboard on http://127.0.0.1:24680
+  McpHub install      Register McpHub to auto-start at login
+  McpHub uninstall    Remove auto-start registration
   McpHub status       Show detected servers, cache, and health config
   McpHub search "q"   Test BM25 search
   McpHub version      Show version
   McpHub help         Show this help
 
-HEALTH MONITORING (v3.1):
-  Built-in health checks with native OS notifications (macOS/Windows/Linux).
-  If a server crashes, you get a desktop notification + auto-restart.
-  Configure in ~/.McpHub/config.json:
-    "settings": {{
-      "health": {{
-        "checkInterval": 30,   // seconds between checks
-        "autoRestart": true,   // auto-restart crashed servers
-        "notifications": true  // native OS notifications
-      }}
-    }}
+TRANSPORT MODES:
+  Default (stdio + HTTP):
+    Cursor config: {{"mcpServers": {{"McpHub": {{"command": "/path/to/McpHub"}}}}}}
+    Starts stdio proxy AND HTTP server on :24680 (dashboard + SSE)
+
+  Serve (HTTP only, recommended):
+    Cursor config: {{"mcpServers": {{"McpHub": {{"url": "http://127.0.0.1:24680/sse"}}}}}}
+    Run 'McpHub install' to auto-start, then configure Cursor with URL.
+    Survives Cursor restarts. Single process for everything.
 
 FIRST TIME SETUP:
   1. Configure servers in ~/.McpHub/config.json
   2. Run: McpHub generate    (one-time, ~60s)
-  3. Add to Cursor mcp.json
-  4. Every startup is instant (<1ms from cache)
+  3. Run: McpHub install     (auto-start at login)
+  4. Configure Cursor with URL: http://127.0.0.1:24680/sse
 "#,
         VERSION = VERSION
     );
@@ -169,6 +172,17 @@ fn cmd_search(query: &str) {
     }
 }
 
+/// HTTP-only server mode: dashboard + SSE, no stdio.
+/// Used by `McpHub serve` and auto-start (install).
+async fn cmd_serve() {
+    eprintln!("McpHub v{} — serve mode (HTTP only)", VERSION);
+    let config = auto_detect();
+    let proxy = std::sync::Arc::new(ProxyServer::new(config));
+    proxy.init().await;
+    eprintln!("[McpHub][SERVE] Ready. Waiting for SSE connections on http://127.0.0.1:24680/sse");
+    dashboard::start_server(proxy).await;
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -179,15 +193,33 @@ async fn main() {
         Some("status") => cmd_status(),
         Some("generate") => cmd_generate().await,
         Some("dashboard") | Some("ui") | Some("web") => dashboard::start_dashboard().await,
+        Some("install") => install::install(),
+        Some("uninstall") => install::uninstall(),
+        Some("serve") => cmd_serve().await,
         Some("search") => {
             let query = args.get(2).map(|s| s.as_str()).unwrap_or("*");
             cmd_search(query);
         }
         _ => {
+            // Default: stdio proxy + HTTP server with SSE
             eprintln!("McpHub v{} — starting...", VERSION);
             let config = auto_detect();
-            let proxy = ProxyServer::new(config);
-            proxy.run().await;
+            let proxy = std::sync::Arc::new(ProxyServer::new(config));
+
+            // Init proxy (load cache, start background tasks)
+            proxy.init().await;
+
+            // Try to start HTTP server in background (non-blocking if port taken)
+            let proxy_http = proxy.clone();
+            tokio::spawn(async move {
+                dashboard::start_server(proxy_http).await;
+            });
+
+            // Give HTTP server a moment to bind
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            // Run stdio loop (blocks until stdin closes)
+            proxy.stdio_loop().await;
         }
     }
 }

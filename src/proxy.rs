@@ -31,7 +31,9 @@ impl ProxyServer {
         }
     }
 
-    pub async fn run(&self) {
+    /// Initialize proxy: load cache, start background tasks.
+    /// Call this before stdio_loop() or serving SSE.
+    pub async fn init(&self) {
         // 1. Load cache synchronously FIRST (instant, <1ms)
         if let Some(cached) = crate::cache::load_cache() {
             let mut all_tools: Vec<IndexedTool> = Vec::new();
@@ -81,8 +83,11 @@ impl ProxyServer {
                 monitor.run().await;
             });
         }
+    }
 
-        // 5. Main stdio loop (index already populated)
+    /// Full run: init + stdio loop. Backward compatible.
+    pub async fn run(&self) {
+        self.init().await;
         self.stdio_loop().await;
     }
 
@@ -94,7 +99,7 @@ impl ProxyServer {
         }
     }
 
-    async fn stdio_loop(&self) {
+    pub async fn stdio_loop(&self) {
         let stdin = io::stdin();
         let mut stdout = io::stdout();
         let reader = BufReader::new(stdin);
@@ -125,18 +130,27 @@ impl ProxyServer {
         self.child_manager.stop_all().await;
     }
 
-    async fn handle_request(&self, req: JsonRpcRequest) -> Option<JsonRpcResponse> {
+    pub async fn handle_request(&self, req: JsonRpcRequest) -> Option<JsonRpcResponse> {
         match req.method.as_str() {
             "initialize" => Some(self.handle_initialize(req.id)),
             "notifications/initialized" => None,
             "tools/list" => Some(self.handle_tools_list(req.id).await),
             "tools/call" => Some(self.handle_tools_call(req.id, req.params).await),
+            "prompts/list" => Some(JsonRpcResponse::success(req.id, serde_json::json!({ "prompts": [] }))),
+            "prompts/get" => Some(JsonRpcResponse::error(req.id, -32602, "No prompts available".into())),
+            "resources/list" => Some(JsonRpcResponse::success(req.id, serde_json::json!({ "resources": [] }))),
+            "resources/templates/list" => Some(JsonRpcResponse::success(req.id, serde_json::json!({ "resourceTemplates": [] }))),
+            "resources/read" => Some(JsonRpcResponse::error(req.id, -32602, "No resources available".into())),
+            "completion/complete" => Some(JsonRpcResponse::success(req.id, serde_json::json!({ "completion": { "values": [] } }))),
             "ping" => Some(JsonRpcResponse::success(req.id, serde_json::json!({}))),
-            _ => Some(JsonRpcResponse::error(
-                req.id,
-                -32601,
-                format!("Method not found: {}", req.method),
-            )),
+            _ => {
+                eprintln!("[McpHub][WARN] Unknown method: {}", req.method);
+                Some(JsonRpcResponse::error(
+                    req.id,
+                    -32601,
+                    format!("Method not found: {}", req.method),
+                ))
+            }
         }
     }
 
@@ -156,10 +170,12 @@ impl ProxyServer {
             protocol_version: "2024-11-05".into(),
             capabilities: Capabilities {
                 tools: ToolsCapability {},
+                prompts: PromptsCapability {},
+                resources: ResourcesCapability {},
             },
             server_info: ServerInfo {
                 name: "McpHub".into(),
-                version: "3.1.0".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
             },
             instructions: Some(
                 "IMPORTANT: If MemoryPilot is available, call its 'recall' tool at the start of every new conversation \

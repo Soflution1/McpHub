@@ -2,9 +2,12 @@
 //! Serves HTML + JSON API on http://127.0.0.1:24680
 //! Zero external dependencies — uses tokio::net::TcpListener directly.
 
+use crate::proxy::ProxyServer;
+use crate::sse::{extract_session_id, SseManager};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -758,53 +761,124 @@ fn urldecode(s: &str) -> String {
 
 // ─── Server Entry Point ─────────────────────────────────────
 
+/// Start dashboard only (no SSE, no proxy). For `McpHub dashboard` command.
 pub async fn start_dashboard() {
+    start_http(None, None, true).await;
+}
+
+/// Start full server: dashboard + SSE transport. For `McpHub serve` and default mode.
+pub async fn start_server(proxy: Arc<ProxyServer>) {
+    start_http(Some(proxy), Some(Arc::new(SseManager::new())), false).await;
+}
+
+async fn start_http(
+    proxy: Option<Arc<ProxyServer>>,
+    sse: Option<Arc<SseManager>>,
+    open_browser: bool,
+) {
     let addr = "127.0.0.1:24680";
     let listener = match TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("[dashboard] Failed to bind {}: {}", addr, e);
-            eprintln!("[dashboard] Is another instance running?");
+            eprintln!("[McpHub] Failed to bind {}: {}", addr, e);
+            eprintln!("[McpHub] Is another instance running?");
             return;
         }
     };
 
-    eprintln!("[dashboard] Running on http://{}", addr);
+    if proxy.is_some() {
+        eprintln!("[McpHub][HTTP] Server ready on http://{}", addr);
+        eprintln!("[McpHub][SSE]  Cursor endpoint: http://{}/sse", addr);
+    } else {
+        eprintln!("[dashboard] Running on http://{}", addr);
+    }
 
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open")
-        .arg(format!("http://{}", addr))
-        .spawn();
-    #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open")
-        .arg(format!("http://{}", addr))
-        .spawn();
-    #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd")
-        .args(["/c", "start", &format!("http://{}", addr)])
-        .spawn();
+    if open_browser {
+        #[cfg(target_os = "macos")]
+        let _ = std::process::Command::new("open")
+            .arg(format!("http://{}", addr))
+            .spawn();
+        #[cfg(target_os = "linux")]
+        let _ = std::process::Command::new("xdg-open")
+            .arg(format!("http://{}", addr))
+            .spawn();
+        #[cfg(target_os = "windows")]
+        let _ = std::process::Command::new("cmd")
+            .args(["/c", "start", &format!("http://{}", addr)])
+            .spawn();
+    }
 
     loop {
-        let (mut stream, _) = match listener.accept().await {
+        let (stream, _) = match listener.accept().await {
             Ok(conn) => conn,
             Err(_) => continue,
         };
 
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 65536];
-            let n = match stream.read(&mut buf).await {
-                Ok(n) if n > 0 => n,
-                _ => return,
-            };
-            let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+        let proxy_clone = proxy.clone();
+        let sse_clone = sse.clone();
 
-            if let Some(req) = parse_request(&raw) {
-                let response = route(&req).await;
-                let _ = stream.write_all(&response).await;
-            }
-            let _ = stream.shutdown().await;
+        tokio::spawn(async move {
+            handle_connection(stream, proxy_clone, sse_clone).await;
         });
     }
+}
+
+async fn handle_connection(
+    mut stream: tokio::net::TcpStream,
+    proxy: Option<Arc<ProxyServer>>,
+    sse: Option<Arc<SseManager>>,
+) {
+    // Read timeout: 10s max to receive headers + body. Prevents Slowloris.
+    let mut buf = vec![0u8; 65536];
+    let n = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        stream.read(&mut buf),
+    ).await {
+        Ok(Ok(n)) if n > 0 => n,
+        _ => return, // Timeout or read error: drop connection
+    };
+    let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+
+    let req = match parse_request(&raw) {
+        Some(r) => r,
+        None => return,
+    };
+
+    let path = req.path.split('?').next().unwrap_or(&req.path).to_string();
+
+    // SSE endpoint: long-lived connection, don't close
+    if path == "/sse" && req.method == "GET" {
+        if let Some(sse_mgr) = &sse {
+            sse_mgr.handle_connect(stream).await;
+            return; // Connection handled, don't close
+        } else {
+            let resp = json_err(503, "SSE not available in dashboard-only mode");
+            let _ = stream.write_all(&resp).await;
+            let _ = stream.shutdown().await;
+            return;
+        }
+    }
+
+    // Message endpoint: process JSON-RPC via SSE session
+    if path == "/message" && req.method == "POST" {
+        let response = if let (Some(proxy_ref), Some(sse_mgr)) = (&proxy, &sse) {
+            if let Some(session_id) = extract_session_id(&req.path) {
+                sse_mgr.handle_message(&session_id, &req.body, proxy_ref).await
+            } else {
+                json_err(400, "Missing sessionId parameter")
+            }
+        } else {
+            json_err(503, "SSE not available in dashboard-only mode")
+        };
+        let _ = stream.write_all(&response).await;
+        let _ = stream.shutdown().await;
+        return;
+    }
+
+    // Normal dashboard routes
+    let response = route(&req).await;
+    let _ = stream.write_all(&response).await;
+    let _ = stream.shutdown().await;
 }
 
 // ─── Embedded HTML ───────────────────────────────────────────
